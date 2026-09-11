@@ -8,6 +8,7 @@ import {
   Camera,
   Clock,
   Crown,
+  LogOut,
   Pencil,
   ShieldCheck,
   Star,
@@ -64,7 +65,7 @@ function ProfilePhotoButton({
   name,
   onSelectFile,
 }: {
-  src: string;
+  src: string | null;
   name: string;
   onSelectFile: (file: File) => void;
 }) {
@@ -90,7 +91,7 @@ function ProfilePhotoButton({
       className="group relative shrink-0"
     >
       <span className="relative block">
-        <Avatar name={name} color={PROFILE.color} src={src} size={56} />
+        <Avatar name={name} color={PROFILE.color} src={src ?? undefined} size={56} />
         <span className="pointer-events-none absolute inset-0 rounded-full bg-black/0 transition-colors group-hover:bg-black/45" />
       </span>
       <span className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#00FF87] text-black ring-2 ring-[#121316] transition group-hover:scale-110 group-hover:bg-[#4dffaa]">
@@ -215,6 +216,7 @@ export function MyTab({
   onGoFind,
   onOpenRoom,
   onQuitGroup,
+  onLogout,
   groups,
   myUserId,
   nickname,
@@ -227,13 +229,14 @@ export function MyTab({
   onGoFind: () => void;
   onOpenRoom: (group: Group) => void;
   onQuitGroup: (groupId: string) => void;
+  onLogout: () => void;
   groups: Group[];
   myUserId?: string | null;
   nickname: string;
   remainingNicknameChanges: number;
   nicknameLockDays: number;
   onChangeNickname: (next: string) => Promise<void>;
-  myProfileImage: string;
+  myProfileImage: string | null;
   onSelectProfileImage: (file: File) => void;
 }) {
   const myGroups = useMemo(
@@ -249,6 +252,7 @@ export function MyTab({
   const [editNickname, setEditNickname] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [savingNickname, setSavingNickname] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const purgeLeft = usePurgeCountdown(INITIAL_PURGE_SECONDS);
   const expired = purgeLeft <= 0;
 
@@ -282,6 +286,14 @@ export function MyTab({
     setEditNickname(nickname);
     setEditError(null);
     setShowNickEdit(true);
+  }
+
+  async function handleLogout() {
+    if (loggingOut) return;
+    const confirmed = window.confirm("로그아웃 하시겠습니까?");
+    if (!confirmed) return;
+    setLoggingOut(true);
+    onLogout();
   }
 
   async function saveNicknameEdit() {
@@ -527,7 +539,7 @@ export function MyTab({
               <Avatar
                 name={u.me ? nickname || u.name : u.name}
                 color={u.color}
-                src={u.me ? myProfileImage : u.avatarUrl}
+                src={u.me ? myProfileImage ?? undefined : u.avatarUrl}
                 size={36}
               />
               <span
@@ -546,6 +558,16 @@ export function MyTab({
           ))}
         </Card>
       </section>
+
+      <button
+        type="button"
+        onClick={() => void handleLogout()}
+        disabled={loggingOut}
+        className="flex w-full items-center justify-center gap-1.5 py-4 text-center text-sm text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300 disabled:opacity-50"
+      >
+        <LogOut size={14} strokeWidth={2} />
+        {loggingOut ? "로그아웃 중..." : "로그아웃"}
+      </button>
 
       <WeeklyShortsModal
         open={showShortsModal}

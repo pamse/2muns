@@ -1,22 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ME_AVATAR } from "./data";
 
 export const MY_PROFILE_IMAGE_KEY = "my_profile_image";
 const MAX_BYTES = 5 * 1024 * 1024;
 
 export function useMyProfileImage() {
-  const [src, setSrc] = useState(ME_AVATAR);
+  const [src, setSrc] = useState<string | null>(null);
 
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(MY_PROFILE_IMAGE_KEY);
-      if (stored) {
-        setSrc(stored);
-      }
+      setSrc(stored || null);
     } catch {
-      // localStorage 접근 불가 시 기본 아바타 유지
+      setSrc(null);
     }
   }, []);
 
@@ -51,5 +48,14 @@ export function useMyProfileImage() {
     reader.readAsDataURL(file);
   }
 
-  return { src, applyFile };
+  function clearImage() {
+    setSrc(null);
+    try {
+      window.localStorage.removeItem(MY_PROFILE_IMAGE_KEY);
+    } catch {
+      // localStorage 접근 불가 시 메모리 상태만 비움
+    }
+  }
+
+  return { src, applyFile, clearImage };
 }

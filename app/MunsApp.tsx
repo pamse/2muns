@@ -2,7 +2,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, Plus } from "lucide-react";
+import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { addGroupMember, fetchAppGroups, removeGroupMember } from "@/lib/groups";
@@ -23,6 +23,7 @@ import { InfoTab } from "./InfoTab";
 import { LoginGateModal } from "./LoginGateModal";
 import { MyTab } from "./MyTab";
 import { NoticesSheet, useActiveNotices } from "./NoticesSheet";
+import { MunsyWelcomeModal, hasSeenMunsyWelcome, isMunsyWelcomePending, markMunsyWelcomePending, markMunsyWelcomeSeen } from "./MunsyWelcomeModal";
 import { Onboarding } from "./Onboarding";
 import { RoomDetail } from "./RoomDetail";
 import { useMyProfileImage } from "./useMyProfileImage";
@@ -126,12 +127,14 @@ export default function MunsApp() {
   const [showCreate, setShowCreate] = useState(false);
   const [showNotices, setShowNotices] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showMunsyWelcome, setShowMunsyWelcome] = useState(false);
+  const [welcomeNickname, setWelcomeNickname] = useState("");
   const [showLoginGate, setShowLoginGate] = useState(false);
   const [showEntryDenied, setShowEntryDenied] = useState(false);
   const [autoOpenVerify, setAutoOpenVerify] = useState(false);
   const pendingIntentRef = useRef<AuthIntent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const { src: myProfileImage, applyFile: applyProfileImage } = useMyProfileImage();
+  const { src: myProfileImage, applyFile: applyProfileImage, clearImage } = useMyProfileImage();
   const {
     nickname,
     userId,
@@ -141,6 +144,7 @@ export default function MunsApp() {
     lockDays,
     saveInitialNickname,
     changeNickname,
+    clearSession,
   } = useNickname();
   const { notices, loading: noticesLoading, error: noticesError, refresh: refreshNotices, prependNotice } = useActiveNotices(userId, ready);
 
@@ -169,6 +173,14 @@ export default function MunsApp() {
   }, [refreshGroups]);
 
   useEffect(() => {
+    if (!ready || !hasNickname) return;
+    if (hasSeenMunsyWelcome()) return;
+    if (isMunsyWelcomePending()) {
+      setShowMunsyWelcome(true);
+    }
+  }, [ready, hasNickname]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(null), 2400);
     return () => window.clearTimeout(timer);
@@ -194,6 +206,18 @@ export default function MunsApp() {
   function handleTabChange(next: TabKey) {
     if (next === "my" && !requireAuth({ type: "my" })) return;
     setTab(next);
+  }
+
+  async function handleLogout() {
+    clearImage();
+    await clearSession();
+    setRoom(null);
+    setShowCreate(false);
+    setShowNotices(false);
+    setShowOnboarding(false);
+    setShowLoginGate(false);
+    setTab("find");
+    window.location.href = "/";
   }
 
   function handleCreate(g: Group) {
@@ -327,13 +351,22 @@ export default function MunsApp() {
               aria-current={tab === "my" ? "page" : undefined}
               className="ml-1"
             >
-              <Avatar
-                name={nickname || "나"}
-                color="linear-gradient(135deg,#00FF87,#0ea5e9)"
-                src={myProfileImage}
-                size={34}
-                ring
-              />
+              {isLoggedIn() && myProfileImage ? (
+                <Avatar
+                  name={nickname || "나"}
+                  color="linear-gradient(135deg,#00FF87,#0ea5e9)"
+                  src={myProfileImage}
+                  size={34}
+                  ring
+                />
+              ) : (
+                <span
+                  className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-full bg-zinc-800 ring-2 ring-[#1B1D22]"
+                  aria-hidden
+                >
+                  <User className="h-5 w-5 text-zinc-400" />
+                </span>
+              )}
             </button>
           </div>
         </header>
@@ -364,6 +397,7 @@ export default function MunsApp() {
               groups={groups}
               myUserId={userId}
               onOpenRoom={handleOpenRoom}
+              onLogout={() => void handleLogout()}
               onQuitGroup={(groupId) => {
                 const joinUserId = userId || "me";
                 const target = groups.find((item) => item.id === groupId);
@@ -478,7 +512,7 @@ export default function MunsApp() {
           }}
           ownerId={userId || "me"}
           ownerName={nickname || "나"}
-          ownerAvatar={myProfileImage}
+          ownerAvatar={myProfileImage || ME_AVATAR}
         />
 
         <LoginGateModal
@@ -501,10 +535,27 @@ export default function MunsApp() {
             clearPendingIntent();
           }}
           onComplete={async ({ nickname: nextNickname, selectedCategories }) => {
-            if (!hasNickname) {
+            const wasNew = !hasNickname;
+            if (wasNew) {
               await saveInitialNickname(nextNickname, selectedCategories);
             }
             setShowOnboarding(false);
+            if (wasNew && !hasSeenMunsyWelcome()) {
+              markMunsyWelcomePending();
+              setWelcomeNickname(nextNickname.trim());
+              setShowMunsyWelcome(true);
+            }
+          }}
+        />
+
+        <MunsyWelcomeModal
+          open={showMunsyWelcome}
+          nickname={welcomeNickname || nickname}
+          onStart={() => {
+            markMunsyWelcomeSeen();
+            setShowMunsyWelcome(false);
+            setFilter("joinable");
+            setTab("find");
           }}
         />
 

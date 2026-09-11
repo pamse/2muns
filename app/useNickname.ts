@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { MY_PROFILE_IMAGE_KEY } from "./useMyProfileImage";
 
 export const NICKNAME_KEY = "my_nickname";
 export const NICKNAME_UPDATED_AT_KEY = "nickname_updated_at";
@@ -110,6 +111,59 @@ function persistLocal(nickname: string, updatedAt: string, log: string[]) {
   window.localStorage.setItem(NICKNAME_CHANGE_LOG_KEY, JSON.stringify(log));
 }
 
+const SESSION_KEYS = [
+  NICKNAME_KEY,
+  NICKNAME_UPDATED_AT_KEY,
+  NICKNAME_CHANGE_LOG_KEY,
+  USER_ID_KEY,
+  MY_PROFILE_IMAGE_KEY,
+  "has_seen_munsy_welcome",
+  "munsy_welcome_pending",
+] as const;
+
+function isUserCacheKey(key: string) {
+  const lower = key.toLowerCase();
+  return (
+    key.startsWith("2muns_") ||
+    key.startsWith("my_") ||
+    lower.includes("nickname") ||
+    lower.includes("profile") ||
+    lower.includes("avatar") ||
+    lower === "user" ||
+    lower.startsWith("user") ||
+    lower.includes("session")
+  );
+}
+
+function removeUserCacheKeys() {
+  for (const key of SESSION_KEYS) {
+    window.localStorage.removeItem(key);
+  }
+  const extras: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key && isUserCacheKey(key)) {
+      extras.push(key);
+    }
+  }
+  for (const key of extras) {
+    window.localStorage.removeItem(key);
+  }
+}
+
+export async function logoutLocalSession() {
+  try {
+    removeUserCacheKeys();
+  } catch {
+    // localStorage 접근 불가 시에도 인증 해제는 시도
+  }
+  try {
+    await supabase.auth.signOut();
+  } catch (error) {
+    console.error("supabase signOut failed", error);
+  }
+}
+
 export function useNickname() {
   const [nickname, setNickname] = useState("");
   const [changeLog, setChangeLog] = useState<string[]>([]);
@@ -203,6 +257,14 @@ export function useNickname() {
     [changeLog, nickname],
   );
 
+  const clearSession = useCallback(async () => {
+    await logoutLocalSession();
+    setNickname("");
+    setChangeLog([]);
+    setHasNickname(false);
+    setUserId(null);
+  }, []);
+
   return {
     nickname,
     userId,
@@ -212,5 +274,6 @@ export function useNickname() {
     lockDays,
     saveInitialNickname,
     changeNickname,
+    clearSession,
   };
 }

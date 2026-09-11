@@ -599,7 +599,7 @@ export function RoomDetail({
   group: Group;
   onBack: () => void;
   nickname?: string;
-  myAvatar?: string;
+  myAvatar?: string | null;
   userId?: string | null;
   onGroupUpdate?: (group: Group) => void;
   onRaceNotices?: (notice: Notice) => void;
