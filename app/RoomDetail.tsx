@@ -25,6 +25,7 @@ import {
   verificationVideoUrl,
 } from "@/lib/verifications";
 import { Avatar, GroupThumb, Pill, StackedAvatars } from "./ui";
+import { groupThumbnailSrc } from "@/lib/categories";
 
 const RACE_START_TOAST = "🎉 레이스가 시작되었습니다! 오늘의 인증을 완료해보세요.";
 
@@ -1103,7 +1104,7 @@ export function RoomDetail({
         <button type="button" onClick={onBack} aria-label="뒤로" className="p-1">
           <ArrowLeft size={22} className="text-white" />
         </button>
-        <GroupThumb src={group.cover} alt={group.name} size={36} />
+        <GroupThumb src={groupThumbnailSrc(group)} alt={group.name} size={36} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-base font-bold text-white">{group.name}</h1>
           <p className="flex items-center gap-1 text-[11px] text-gray-500">

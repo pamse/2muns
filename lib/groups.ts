@@ -1,10 +1,10 @@
 import {
-  GROUP_COVERS,
   memberColor,
   type Group,
   type GroupStatus,
   type Member,
 } from "@/app/data";
+import { getCategoryThumbnail } from "@/lib/categories";
 import { challengeDayNumber } from "@/lib/dates";
 import { cacheBustAvatarUrl, pickMemberAvatarUrl } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
@@ -16,14 +16,6 @@ function parseHour(value: string | null | undefined, fallback: number) {
   if (!value) return fallback;
   const hour = Number.parseInt(value.slice(0, 2), 10);
   return Number.isFinite(hour) ? hour : fallback;
-}
-
-function coverForId(id: string) {
-  let hash = 0;
-  for (const char of id) {
-    hash = (hash * 31 + char.charCodeAt(0)) | 0;
-  }
-  return GROUP_COVERS[Math.abs(hash) % GROUP_COVERS.length];
 }
 
 export function isStartedGroupStatus(
@@ -60,7 +52,7 @@ export function mapAppGroup(row: AppGroup, members: Member[]): Group {
     intro: row.description || "",
     icon: "🔥",
     gradient: memberColor(0),
-    cover: coverForId(row.id),
+    cover: getCategoryThumbnail(row.category),
     day: challengeDayFromStart(row.started_at, row.status),
     total: TOTAL_DAYS,
     startedAt: row.started_at,

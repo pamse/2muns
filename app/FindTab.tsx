@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight, Flame, Loader2, Lock, Plus, Users } from "lucide-react";
 import { isGroupMember, type Group, type GroupFilter } from "./data";
+import { groupThumbnailSrc } from "@/lib/categories";
 import { Card, GroupThumb, Pill, ProgressBar, StackedAvatars } from "./ui";
 
 export function EntryDeniedModal({
@@ -122,7 +123,7 @@ function GroupCard({
   return (
     <Card onClick={() => onOpen(group)} className="overflow-hidden p-4">
       <div className="flex gap-3.5">
-        <GroupThumb src={group.cover} alt={group.name} size={68} />
+        <GroupThumb src={groupThumbnailSrc(group)} alt={group.name} size={64} />
 
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">

@@ -5,7 +5,8 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { ChevronDown, Info, Lock, Timer, Users, Zap } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { GROUP_COVERS, ME_AVATAR, type Group } from "./data";
+import { ME_AVATAR, type Group } from "./data";
+import { getCategoryThumbnail } from "@/lib/categories";
 import { BottomSheet } from "./ui";
 
 export const GROUP_CATEGORIES = [
@@ -512,7 +513,7 @@ export function CreateGroupSheet({
       category,
       icon: ICONS[Math.floor(Math.random() * ICONS.length)],
       gradient: GRADIENTS[Math.floor(Math.random() * GRADIENTS.length)],
-      cover: GROUP_COVERS[Math.floor(Math.random() * GROUP_COVERS.length)],
+      cover: getCategoryThumbnail(category),
       day: 0,
       total: 66,
       capacity: 6,

@@ -15,7 +15,7 @@ export function Logo({ className = "" }: { className?: string }) {
   );
 }
 
-/** 모임 대표 썸네일 — 다크 실사 + 오버레이 */
+/** 모임 대표 썸네일 — 카테고리 이미지 + 네온 틴트 */
 export function GroupThumb({
   src,
   alt,
@@ -27,7 +27,7 @@ export function GroupThumb({
 }) {
   return (
     <span
-      className="relative block shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-[#23262F]"
+      className="relative block shrink-0 overflow-hidden rounded-2xl border border-[#00FF87]/15 bg-[#23262F]"
       style={{ width: size, height: size }}
       role="img"
       aria-label={alt}
@@ -37,9 +37,9 @@ export function GroupThumb({
         alt=""
         width={size}
         height={size}
-        className="h-full w-full object-cover"
+        className="h-full w-full rounded-2xl object-cover"
       />
-      <span className="absolute inset-0 bg-black/30 backdrop-blur-[1px]" />
+      <span className="absolute inset-0 bg-gradient-to-br from-[#00FF87]/12 via-transparent to-black/30" />
     </span>
   );
 }
