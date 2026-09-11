@@ -43,6 +43,25 @@ export async function fetchVerifications(groupId: string, day: number) {
   return (data ?? []) as Verification[];
 }
 
+export async function fetchUserVerificationDays(groupId: string, userId: string) {
+  const { data, error } = await supabase
+    .from("verifications")
+    .select("day")
+    .eq("group_id", groupId)
+    .eq("user_id", userId);
+
+  if (error) {
+    throw new Error(error.message || "인증 기록을 불러오지 못했습니다.");
+  }
+
+  const days = new Set<number>();
+  for (const row of data ?? []) {
+    const day = Number(row.day);
+    if (Number.isInteger(day) && day > 0) days.add(day);
+  }
+  return [...days];
+}
+
 export async function uploadVerificationVideo(input: {
   groupId: string;
   userId: string;

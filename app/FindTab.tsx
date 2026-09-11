@@ -358,32 +358,35 @@ export function FindTab({
         ) : null}
       </div>
 
-      <div className="sticky top-0 z-20 bg-[#121316]/95 px-4 py-3 backdrop-blur">
-        <div className="flex gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {chips.map((c) => {
-            const on = filter === c.key;
-            return (
-              <button
-                key={c.key}
-                type="button"
-                onClick={() => onFilterChange(c.key)}
-                className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] font-semibold transition-colors ${
-                  on
-                    ? "border-[#00e599] bg-[#00e599] text-black"
-                    : "border-gray-700 bg-transparent text-gray-400"
-                }`}
-              >
-                {c.label}
-                <span
-                  className={`rounded-full px-1.5 text-[11px] ${
-                    on ? "bg-black/20 text-black" : "bg-white/10 text-gray-300"
+      <div className="sticky top-0 z-20 bg-[#121316]/95 py-3 backdrop-blur">
+        <div className="no-scrollbar overflow-x-auto">
+          <div className="flex w-max gap-2 py-0.5 pl-4 pr-4">
+            {chips.map((c) => {
+              const on = filter === c.key;
+              return (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() => onFilterChange(c.key)}
+                  className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] font-semibold transition-colors ${
+                    on
+                      ? "border-[#00e599] bg-[#00e599] text-black"
+                      : "border-gray-700 bg-transparent text-gray-400"
                   }`}
                 >
-                  {c.count}
-                </span>
-              </button>
-            );
-          })}
+                  {c.label}
+                  <span
+                    className={`rounded-full px-1.5 text-[11px] ${
+                      on ? "bg-black/20 text-black" : "bg-white/10 text-gray-300"
+                    }`}
+                  >
+                    {c.count}
+                  </span>
+                </button>
+              );
+            })}
+            <span className="w-4 shrink-0" aria-hidden />
+          </div>
         </div>
       </div>
 

@@ -1,10 +1,39 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+import { AlertTriangle, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { BottomSheet, Pill } from "./ui";
+
+function dismissedStorageKey(userId: string | null) {
+  return `muns:dismissed-notices:${userId?.trim() || "anon"}`;
+}
+
+function readDismissedIds(userId: string | null): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(dismissedStorageKey(userId));
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistDismissedId(userId: string | null, noticeId: string) {
+  if (typeof window === "undefined") return;
+  const next = [...new Set([...readDismissedIds(userId), noticeId])];
+  window.localStorage.setItem(dismissedStorageKey(userId), JSON.stringify(next));
+}
+
+function withoutDismissed(rows: Notice[], userId: string | null) {
+  const dismissed = new Set(readDismissedIds(userId));
+  if (dismissed.size === 0) return rows;
+  return rows.filter((notice) => !dismissed.has(notice.id));
+}
 
 function formatNoticeDate(value: string) {
   const date = new Date(value);
@@ -91,10 +120,13 @@ export function useActiveNotices(myUserId: string | null, ready = true) {
         } else {
           const rows = (data ?? []) as Notice[];
           setNotices(
-            rows.filter(
-              (notice) =>
-                notice.user_id == null ||
-                (userId != null && notice.user_id === userId),
+            withoutDismissed(
+              rows.filter(
+                (notice) =>
+                  notice.user_id == null ||
+                  (userId != null && notice.user_id === userId),
+              ),
+              userId,
             ),
           );
           setError(null);
@@ -134,6 +166,9 @@ export function useActiveNotices(myUserId: string | null, ready = true) {
 
   const prependNotice = useCallback((notice: Notice) => {
     setNotices((prev) => {
+      if (readDismissedIds(myUserId).includes(notice.id)) {
+        return prev;
+      }
       if (
         prev.some(
           (item) =>
@@ -147,7 +182,35 @@ export function useActiveNotices(myUserId: string | null, ready = true) {
       }
       return [notice, ...prev];
     });
-  }, []);
+  }, [myUserId]);
+
+  const removeNotice = useCallback(
+    async (notice: Notice) => {
+      setNotices((prev) => prev.filter((item) => item.id !== notice.id));
+      persistDismissedId(myUserId, notice.id);
+
+      const canDeleteRemote =
+        Boolean(notice.id) && myUserId != null && notice.user_id === myUserId;
+      if (!canDeleteRemote) return;
+
+      const { error: deleteError } = await supabase
+        .from("notices")
+        .delete()
+        .eq("id", notice.id);
+
+      if (!deleteError) return;
+
+      const { error: updateError } = await supabase
+        .from("notices")
+        .update({ is_active: false })
+        .eq("id", notice.id);
+
+      if (updateError) {
+        console.error("notice delete failed", deleteError, updateError);
+      }
+    },
+    [myUserId],
+  );
 
   useEffect(() => {
     if (!ready) {
@@ -176,6 +239,34 @@ export function useActiveNotices(myUserId: string | null, ready = true) {
           prependNotice(row);
         },
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
+          schema: "public",
+          table: "notices",
+        },
+        (payload) => {
+          const row = payload.old as { id?: string } | undefined;
+          if (!row?.id) return;
+          setNotices((prev) => prev.filter((item) => item.id !== row.id));
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "notices",
+        },
+        (payload) => {
+          const row = payload.new as Notice | undefined;
+          if (!row?.id) return;
+          if (row.is_active === false) {
+            setNotices((prev) => prev.filter((item) => item.id !== row.id));
+          }
+        },
+      )
       .subscribe();
 
     return () => {
@@ -183,7 +274,7 @@ export function useActiveNotices(myUserId: string | null, ready = true) {
     };
   }, [myUserId, ready, prependNotice]);
 
-  return { notices, loading, error, refresh: fetchNotices, prependNotice };
+  return { notices, loading, error, refresh: fetchNotices, prependNotice, removeNotice };
 }
 
 export function NoticesSheet({
@@ -192,13 +283,21 @@ export function NoticesSheet({
   notices,
   loading,
   error,
+  onDeleteNotice,
 }: {
   open: boolean;
   onClose: () => void;
   notices: Notice[];
   loading: boolean;
   error: string | null;
+  onDeleteNotice?: (notice: Notice) => void | Promise<void>;
 }) {
+  function handleDelete(event: MouseEvent<HTMLButtonElement>, notice: Notice) {
+    event.preventDefault();
+    event.stopPropagation();
+    void onDeleteNotice?.(notice);
+  }
+
   return (
     <BottomSheet open={open} onClose={onClose} title="알림">
       {error ? (
@@ -226,11 +325,19 @@ export function NoticesSheet({
                 key={notice.id}
                 className={
                   warning
-                    ? "rounded-2xl border border-orange-500/45 bg-orange-500/10 p-3.5 shadow-[inset_3px_0_0_0_#f97316]"
-                    : "rounded-2xl border border-gray-800 bg-[#121316] p-3.5"
+                    ? "relative rounded-2xl border border-orange-500/45 bg-orange-500/10 p-3.5 pr-10 shadow-[inset_3px_0_0_0_#f97316]"
+                    : "relative rounded-2xl border border-gray-800 bg-[#121316] p-3.5 pr-10"
                 }
               >
-                <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-label="알림 삭제"
+                  onClick={(event) => handleDelete(event, notice)}
+                  className="absolute right-2.5 top-2.5 rounded-full p-1 text-zinc-500 transition-colors hover:bg-white/5 hover:text-white"
+                >
+                  <X className="w-4 h-4 text-zinc-500 hover:text-white" />
+                </button>
+                <div className="flex items-center gap-2 pr-1">
                   {notice.tag ? (
                     <Pill tone={warning ? "danger" : "accent"}>
                       {warning ? <AlertTriangle size={11} strokeWidth={2.4} /> : null}

@@ -28,31 +28,19 @@ import { AttendanceStrip, ATTENDANCE_LIVES } from "./AttendanceStrip";
 import { MunsyProgressCard } from "./MunsyProgressCard";
 import { Avatar, BottomSheet, Card, Pill } from "./ui";
 import { WeeklyShortsModal } from "./WeeklyShortsModal";
-
-/** 목업 유예 시간 — 23:48:12 */
-const INITIAL_PURGE_SECONDS = 23 * 3600 + 48 * 60 + 12;
+import {
+  challengeDayNumber,
+  countMissedChallengeDays,
+  getWeeklyShortsWindow,
+  resolveStartedAt,
+} from "@/lib/dates";
+import { fetchUserVerificationDays } from "@/lib/verifications";
 
 function formatHms(totalSeconds: number) {
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
   return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
-}
-
-function usePurgeCountdown(initialSeconds: number) {
-  const [left, setLeft] = useState(initialSeconds);
-  const deadlineRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    deadlineRef.current = Date.now() + initialSeconds * 1000;
-    const id = window.setInterval(() => {
-      if (!deadlineRef.current) return;
-      setLeft(Math.max(0, Math.round((deadlineRef.current - Date.now()) / 1000)));
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [initialSeconds]);
-
-  return left;
 }
 
 const PROFILE = {
@@ -201,23 +189,21 @@ function WarningBadge({ miss }: { miss: number }) {
   );
 }
 
-function groupProgress(group: Group) {
-  const achievedDays = Math.max(0, group.day);
-  const totalDays = group.total;
-  const pastSlots = 13;
-  const filled = Math.min(pastSlots, achievedDays);
-  const attendance = Array.from({ length: 14 }, (_, index) => {
-    if (index === 13) return false;
-    if (index === 4) return false;
-    return index >= pastSlots - filled;
-  });
-  const missCount = attendance.slice(0, 13).filter((done) => !done).length;
+function groupProgress(
+  group: Group,
+  verifiedDays: ReadonlySet<number>,
+  now = new Date(),
+) {
+  const startedAt = resolveStartedAt(group.startedAt, group.day, now);
+  const dayCount = challengeDayNumber(startedAt, now, group.total);
+  const missCount = countMissedChallengeDays(dayCount, verifiedDays);
   return {
-    achievedDays,
-    totalDays,
+    startedAt,
+    achievedDays: dayCount,
+    totalDays: group.total,
     missCount,
-    streak: achievedDays,
-    attendance,
+    streak: dayCount,
+    verifiedDays,
   };
 }
 
@@ -256,7 +242,7 @@ export function MyTab({
   );
   const [selectedId, setSelectedId] = useState(myGroups[0]?.id ?? "");
   const [showQuit, setShowQuit] = useState(false);
-  const [showShortsBanner, setShowShortsBanner] = useState(true);
+  const [dismissedShortsKey, setDismissedShortsKey] = useState<string | null>(null);
   const [showShortsModal, setShowShortsModal] = useState(false);
   const [showNickEdit, setShowNickEdit] = useState(false);
   const [showNickLimit, setShowNickLimit] = useState(false);
@@ -264,8 +250,11 @@ export function MyTab({
   const [editError, setEditError] = useState<string | null>(null);
   const [savingNickname, setSavingNickname] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const purgeLeft = usePurgeCountdown(INITIAL_PURGE_SECONDS);
-  const expired = purgeLeft <= 0;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [verifiedState, setVerifiedState] = useState<{
+    groupId: string;
+    days: number[];
+  } | null>(null);
 
   useEffect(() => {
     if (myGroups.length === 0) {
@@ -280,7 +269,49 @@ export function MyTab({
   const selected = myGroups.find((group) => group.id === selectedId) ?? myGroups[0] ?? null;
   const started = selected ? hasRaceStarted(selected) : false;
   const recruiting = Boolean(selected && !started);
-  const progress = selected && started ? groupProgress(selected) : null;
+
+  useEffect(() => {
+    if (!started) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [started, selected?.id]);
+
+  useEffect(() => {
+    if (!selected?.id || !started || !myUserId) return;
+    const groupId = selected.id;
+    let cancelled = false;
+    void fetchUserVerificationDays(groupId, myUserId)
+      .then((days) => {
+        if (!cancelled) setVerifiedState({ groupId, days });
+      })
+      .catch((error) => {
+        console.error("verification days fetch failed", error);
+        if (!cancelled) setVerifiedState({ groupId, days: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id, started, myUserId]);
+
+  const now = useMemo(() => new Date(nowMs), [nowMs]);
+  const verifiedDays = useMemo(() => {
+    if (!selected || !started || verifiedState?.groupId !== selected.id) {
+      return new Set<number>();
+    }
+    return new Set(verifiedState.days);
+  }, [selected, started, verifiedState]);
+  const progress = selected && started ? groupProgress(selected, verifiedDays, now) : null;
+  const shortsWindow =
+    selected && started
+      ? getWeeklyShortsWindow(resolveStartedAt(selected.startedAt, selected.day, now), now)
+      : null;
+  const shortsKey = shortsWindow && selected ? `${selected.id}:${shortsWindow.week}` : null;
+  const purgeLeft = shortsWindow
+    ? Math.max(0, Math.round((shortsWindow.expiresAt - nowMs) / 1000))
+    : 0;
+  const showShortsBanner = Boolean(
+    shortsWindow && purgeLeft > 0 && shortsKey && dismissedShortsKey !== shortsKey,
+  );
   const canAdd = myGroups.length < MAX_JOINED_GROUPS;
 
   function handleQuit() {
@@ -408,27 +439,21 @@ export function MyTab({
         </div>
       </section>
 
-      {selected && started && showShortsBanner && (
+      {selected && started && showShortsBanner && shortsWindow ? (
         <div className="relative overflow-hidden rounded-2xl border border-[#00FF87]/40 bg-gradient-to-r from-[#1B1D22] to-[#121316] p-4">
           <button
             type="button"
-            onClick={() => setShowShortsBanner(false)}
+            onClick={() => setDismissedShortsKey(shortsKey)}
             aria-label="배너 닫기"
             className="absolute right-3 top-3 rounded-full p-1 text-gray-500 transition-colors hover:bg-white/5 hover:text-gray-300"
           >
             <X size={16} />
           </button>
           <span className="inline-flex rounded-full bg-[#00FF87]/15 px-2.5 py-0.5 text-xs font-semibold text-[#00FF87]">
-            🔥 1주 차 숏츠 생성 완료
+            🔥 {shortsWindow.week}주 차 숏츠 생성 완료
           </span>
-          <p
-            className={`mt-2 font-mono text-[13px] font-semibold tabular-nums ${
-              expired ? "text-red-400" : "text-amber-300"
-            }`}
-          >
-            {expired
-              ? "⏳ 유예 기간이 종료되어 영상이 파기되었습니다"
-              : `⏳ 파기까지 ${formatHms(purgeLeft)} 남음`}
+          <p className="mt-2 font-mono text-[13px] font-semibold tabular-nums text-amber-300">
+            {`⏳ 파기까지 ${formatHms(purgeLeft)} 남음`}
           </p>
           <p className="mt-1.5 pr-6 text-[12px] leading-relaxed text-gray-400">
             이번 주 7일의 노력이 담긴 숏폼 클립이 완성되었어요. 24시간 후 서버에서
@@ -437,13 +462,12 @@ export function MyTab({
           <button
             type="button"
             onClick={() => setShowShortsModal(true)}
-            disabled={expired}
-            className="mt-3 rounded-xl bg-[#00FF87] px-4 py-2 text-sm font-bold text-black transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+            className="mt-3 rounded-xl bg-[#00FF87] px-4 py-2 text-sm font-bold text-black transition-[filter] hover:brightness-110"
           >
             지금 영상 다운로드
           </button>
         </div>
-      )}
+      ) : null}
 
       {selected && started && progress ? (
         <>
@@ -479,7 +503,9 @@ export function MyTab({
 
           <section>
             <AttendanceStrip
-              doneFlags={progress.attendance}
+              startedAt={progress.startedAt}
+              totalDays={progress.totalDays}
+              verifiedDays={progress.verifiedDays}
               livesLeft={ATTENDANCE_LIVES - progress.missCount}
             />
             <button

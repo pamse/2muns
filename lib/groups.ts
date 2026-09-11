@@ -5,6 +5,7 @@ import {
   type GroupStatus,
   type Member,
 } from "@/app/data";
+import { challengeDayNumber } from "@/lib/dates";
 import { cacheBustAvatarUrl } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
 import type { AppGroup, AppUser } from "@/lib/database.types";
@@ -41,13 +42,7 @@ export function isStartedGroupStatus(
 export function challengeDayFromStart(startedAt: string | null | undefined, status: string | null | undefined) {
   if (!isStartedGroupStatus(status, startedAt)) return 0;
   if (!startedAt) return 1;
-  const start = new Date(startedAt);
-  if (Number.isNaN(start.getTime())) return 1;
-  const startUtc = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
-  const now = new Date();
-  const nowUtc = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  const days = Math.floor((nowUtc - startUtc) / 86_400_000) + 1;
-  return Math.max(1, Math.min(TOTAL_DAYS, days));
+  return challengeDayNumber(startedAt, new Date(), TOTAL_DAYS);
 }
 
 function mapStatus(status: string | null | undefined, startedAt?: string | null): { filter: GroupStatus; raceStatus: Group["raceStatus"] } {
@@ -68,6 +63,7 @@ export function mapAppGroup(row: AppGroup, members: Member[]): Group {
     cover: coverForId(row.id),
     day: challengeDayFromStart(row.started_at, row.status),
     total: TOTAL_DAYS,
+    startedAt: row.started_at,
     capacity: row.max_capacity || 6,
     members,
     filter,

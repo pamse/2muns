@@ -42,3 +42,19 @@ begin
     execute 'alter publication supabase_realtime add table public.notices';
   end if;
 end $$;
+
+-- 알림 개별 삭제 (본인 행 UPDATE/DELETE)
+alter table if exists public.notices enable row level security;
+
+drop policy if exists "notices_delete_all" on public.notices;
+create policy "notices_delete_all"
+  on public.notices for delete
+  to anon, authenticated
+  using (true);
+
+drop policy if exists "notices_update_all" on public.notices;
+create policy "notices_update_all"
+  on public.notices for update
+  to anon, authenticated
+  using (true)
+  with check (true);

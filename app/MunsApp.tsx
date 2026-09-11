@@ -148,7 +148,7 @@ export default function MunsApp() {
     changeNickname,
     clearSession,
   } = useNickname();
-  const { notices, loading: noticesLoading, error: noticesError, refresh: refreshNotices, prependNotice } = useActiveNotices(userId, ready);
+  const { notices, loading: noticesLoading, error: noticesError, refresh: refreshNotices, prependNotice, removeNotice } = useActiveNotices(userId, ready);
 
   const [groupsRefreshing, setGroupsRefreshing] = useState(false);
   const refreshInFlightRef = useRef<Promise<Group[] | null> | null>(null);
@@ -645,6 +645,7 @@ export default function MunsApp() {
           notices={notices}
           loading={noticesLoading}
           error={noticesError}
+          onDeleteNotice={removeNotice}
         />
 
         <CreateGroupSheet

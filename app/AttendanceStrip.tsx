@@ -1,10 +1,19 @@
-// 2müns — MY 탭 최근 14일 가로 출석 캘린더 스트립
+// 2müns — MY 탭 출석 캘린더: 공식 시작일(Day 1)부터 정렬
 "use client";
+
+import {
+  addDaysToKey,
+  challengeDayNumber,
+  dayOfMonthFromKey,
+  localDateKey,
+  weekdayIndexFromKey,
+} from "@/lib/dates";
 
 const WEEKDAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
 export const ATTENDANCE_LIVES = 3;
+const STRIP_DAYS = 14;
 
-type DayStatus = "done" | "missed" | "pending";
+type DayStatus = "done" | "missed" | "pending" | "upcoming";
 
 export type AttendanceCell = {
   key: string;
@@ -12,31 +21,59 @@ export type AttendanceCell = {
   weekday: string;
   isToday: boolean;
   status: DayStatus;
+  challengeDay: number;
 };
 
-function startOfDay(value: Date) {
-  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
-}
-
-export function buildAttendanceStrip(
-  doneFlags: boolean[],
+export function buildAttendanceStrip({
+  startedAt,
+  totalDays,
+  verifiedDays,
   now = new Date(),
-): AttendanceCell[] {
-  const today = startOfDay(now);
-  return Array.from({ length: 14 }, (_, index) => {
-    const date = new Date(today);
-    date.setDate(today.getDate() - (13 - index));
-    const isToday = index === 13;
-    const done = Boolean(doneFlags[index]);
-    const status: DayStatus = done ? "done" : isToday ? "pending" : "missed";
-    return {
-      key: `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`,
-      day: date.getDate(),
-      weekday: WEEKDAY_KO[date.getDay()],
+}: {
+  startedAt: string;
+  totalDays: number;
+  verifiedDays: ReadonlySet<number>;
+  now?: Date;
+}): AttendanceCell[] {
+  const startKey = localDateKey(startedAt);
+  const todayKey = localDateKey(now);
+  if (!startKey || !todayKey) return [];
+
+  const dayCount = challengeDayNumber(startedAt, now, totalDays);
+  const cellCount = Math.min(STRIP_DAYS, Math.max(1, totalDays));
+
+  const cells: AttendanceCell[] = [];
+  for (let index = 0; index < cellCount; index += 1) {
+    const challengeDay = index + 1;
+    const dateKey = addDaysToKey(startKey, index);
+    if (dateKey < startKey) continue;
+
+    const isToday = dateKey === todayKey;
+    const isFuture = dateKey > todayKey;
+    const done = verifiedDays.has(challengeDay);
+
+    let status: DayStatus;
+    if (done) {
+      status = "done";
+    } else if (isFuture || challengeDay > dayCount) {
+      status = "upcoming";
+    } else if (isToday) {
+      status = "pending";
+    } else {
+      status = "missed";
+    }
+
+    cells.push({
+      key: dateKey,
+      day: dayOfMonthFromKey(dateKey),
+      weekday: WEEKDAY_KO[weekdayIndexFromKey(dateKey)] ?? "",
       isToday,
       status,
-    };
-  });
+      challengeDay,
+    });
+  }
+
+  return cells;
 }
 
 function StatusDot({ status }: { status: DayStatus }) {
@@ -60,17 +97,22 @@ function statusLabel(cell: AttendanceCell) {
   if (cell.isToday && cell.status === "pending") return "오늘 예정";
   if (cell.isToday && cell.status === "done") return "오늘 인증 완료";
   if (cell.status === "done") return "인증 완료";
+  if (cell.status === "upcoming") return "예정";
   return "누락";
 }
 
 export function AttendanceStrip({
-  doneFlags,
+  startedAt,
+  totalDays,
+  verifiedDays,
   livesLeft,
 }: {
-  doneFlags: boolean[];
+  startedAt: string;
+  totalDays: number;
+  verifiedDays: ReadonlySet<number>;
   livesLeft: number;
 }) {
-  const days = buildAttendanceStrip(doneFlags);
+  const days = buildAttendanceStrip({ startedAt, totalDays, verifiedDays });
   const lives = Math.max(0, livesLeft);
 
   return (
@@ -82,14 +124,16 @@ export function AttendanceStrip({
         </span>
       </div>
 
-      <div className="no-scrollbar -mx-1 overflow-x-auto">
+      <div className="no-scrollbar overflow-x-auto p-0.5">
         <div className="grid min-w-full grid-cols-7 gap-1.5">
           {days.map((cell) => (
             <div
               key={cell.key}
               title={`${cell.weekday}요일 ${cell.day}일 · ${statusLabel(cell)}`}
-              className={`flex flex-col items-center gap-1 rounded-xl px-2 py-1.5 ${
-                cell.isToday ? "bg-[#00e599]/10 ring-1 ring-[#00e599]" : ""
+              className={`flex flex-col items-center gap-1 rounded-xl border px-2 py-1.5 ${
+                cell.isToday
+                  ? "border-[#00e599] bg-[#00e599]/10"
+                  : "border-transparent"
               }`}
             >
               <span className="text-[11px] text-slate-500">{cell.weekday}</span>

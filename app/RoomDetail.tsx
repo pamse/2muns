@@ -14,7 +14,7 @@ import {
   type Group,
   type Member,
 } from "./data";
-import { fetchAppGroupById, isStartedGroupStatus, removeGroupMember, startGroupRace } from "@/lib/groups";
+import { fetchAppGroupById, challengeDayFromStart, isStartedGroupStatus, removeGroupMember, startGroupRace } from "@/lib/groups";
 import { supabase } from "@/lib/supabase";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { Notice, Verification } from "@/lib/database.types";
@@ -267,12 +267,14 @@ function verifyWindowLabel(group: Group) {
   return `⏰ 오늘의 인증 시간: ${start} ~ ${end}`;
 }
 
-function padClock(n: number) {
-  return String(n).padStart(2, "0");
-}
-
 function formatVerifiedAt(date = new Date()) {
-  return `${padClock(date.getHours())}:${padClock(date.getMinutes())} 인증`;
+  const clock = date.toLocaleTimeString("sv-SE", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return `${clock} 인증`;
 }
 
 function seatsForChallengeDay(
@@ -654,7 +656,12 @@ export function RoomDetail({
   const [forcedStarted, setForcedStarted] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"leave" | "delete" | null>(null);
   const [busy, setBusy] = useState(false);
-  const currentDay = Math.max(1, group.day);
+  const currentDay = Math.max(
+    1,
+    group.startedAt
+      ? challengeDayFromStart(group.startedAt, "started")
+      : group.day,
+  );
   const [weekIndex, setWeekIndex] = useState(() => Math.floor((currentDay - 1) / 7));
   const [dayOffset, setDayOffset] = useState(() => (currentDay - 1) % 7);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
@@ -754,7 +761,8 @@ export function RoomDetail({
         ...groupRef.current,
         raceStatus: "started",
         filter: "ongoing",
-        day: Math.max(1, groupRef.current.day || 1),
+        day: Math.max(1, challengeDayFromStart(startedAt, status ?? "started")),
+        startedAt: startedAt ?? groupRef.current.startedAt ?? new Date().toISOString(),
       });
       void fetchGroupDetail();
       return true;
@@ -978,6 +986,7 @@ export function RoomDetail({
       raceStatus: "started",
       filter: "ongoing",
       day: 1,
+      startedAt: now,
     };
     onGroupUpdate?.(updated);
     setForcedStarted(true);

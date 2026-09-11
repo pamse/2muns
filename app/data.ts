@@ -38,6 +38,8 @@ export type Group = {
   category?: string;
   /** recruiting: 대기 / started: 66일 레이스 진행 */
   raceStatus?: "recruiting" | "started";
+  /** 레이스 공식 시작 시각 (timestamptz). 캘린더 Day 1 = 이 날짜의 KST 달력일 */
+  startedAt?: string | null;
 };
 
 /** 모임 상세(룸)의 숏폼 인증 영상 피드 아이템 */
