@@ -68,9 +68,9 @@ export function MunsyWelcomeModal({
         className="mx-4 w-full max-w-sm rounded-3xl border border-zinc-800 bg-zinc-900 p-6 text-center"
         style={{ animation: "munsyWelcomeIn 0.24s ease-out" }}
       >
-        <div className="relative mx-auto flex h-44 w-44 items-center justify-center">
+        <div className="relative mx-auto h-44 w-44 overflow-hidden rounded-[2rem] bg-zinc-900">
           <span
-            className="absolute inset-6 rounded-full bg-[#00e575]/25 blur-2xl"
+            className="pointer-events-none absolute inset-8 rounded-full bg-[#00e575]/30 blur-3xl"
             aria-hidden
           />
           <img
@@ -78,7 +78,11 @@ export function MunsyWelcomeModal({
             alt="먼시"
             width={176}
             height={176}
-            className="relative z-10 h-44 w-44 object-contain mix-blend-lighten drop-shadow-[0_0_20px_rgba(0,229,117,0.3)]"
+            className="relative z-10 h-44 w-44 object-contain mix-blend-screen [mask-image:radial-gradient(circle,black_60%,transparent_100%)] [-webkit-mask-image:radial-gradient(circle,black_60%,transparent_100%)]"
+          />
+          <span
+            className="pointer-events-none absolute inset-0 shadow-[inset_0_0_28px_18px_#18181b]"
+            aria-hidden
           />
         </div>
         <h2
