@@ -87,8 +87,10 @@ export function MunsyWelcomeModal({
         >
           반가워요, {displayName}님!
         </h2>
-        <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-          하루 단 3초면 충분해요. 저랑 같이 습관 만들어봐요!
+        <p className="mt-2 text-center text-sm leading-relaxed break-keep text-zinc-400">
+          하루 단 3초면 충분해요.
+          <br />
+          저랑 같이 습관 만들어봐요!
         </p>
         <button
           type="button"
