@@ -1,9 +1,9 @@
 // 2müns — '모임찾기' 탭 (메인 홈): 필터 + 모임 카드 리스트
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type TouchEvent } from "react";
 import { createPortal } from "react-dom";
-import { ChevronRight, Flame, Loader2, Lock, Plus, Users } from "lucide-react";
+import { ChevronRight, Flame, Loader2, Lock, Plus, RefreshCw, Users } from "lucide-react";
 import { isGroupMember, type Group, type GroupFilter } from "./data";
 import { Card, GroupThumb, Pill, ProgressBar, StackedAvatars } from "./ui";
 
@@ -61,6 +61,18 @@ export function EntryDeniedModal({
     </div>,
     host,
   );
+}
+
+const PULL_THRESHOLD = 56;
+
+function findScrollParent(el: HTMLElement) {
+  let node: HTMLElement | null = el.parentElement;
+  while (node) {
+    const { overflowY } = window.getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+    node = node.parentElement;
+  }
+  return (document.scrollingElement as HTMLElement | null) ?? null;
 }
 
 function GroupCard({
@@ -126,7 +138,11 @@ function GroupCard({
           actionLabel ? "justify-between" : ""
         }`}
       >
-        <StackedAvatars members={group.members} capacity={group.capacity} />
+        <StackedAvatars
+          members={group.members}
+          capacity={group.capacity}
+          showOwnerMark={false}
+        />
         {actionLabel ? (
           <span className="text-xs font-semibold text-[#00FF87]">{actionLabel}</span>
         ) : null}
@@ -144,6 +160,8 @@ export function FindTab({
   nickname,
   loading = false,
   error = null,
+  refreshing = false,
+  onRefresh,
 }: {
   groups: Group[];
   filter: GroupFilter;
@@ -153,7 +171,21 @@ export function FindTab({
   nickname?: string;
   loading?: boolean;
   error?: string | null;
+  refreshing?: boolean;
+  onRefresh?: () => void | Promise<unknown>;
 }) {
+  const startYRef = useRef<number | null>(null);
+  const pullYRef = useRef(0);
+  const [pullY, setPullY] = useState(0);
+
+  useEffect(() => {
+    pullYRef.current = pullY;
+  }, [pullY]);
+
+  useEffect(() => {
+    if (!refreshing) setPullY(0);
+  }, [refreshing]);
+
   const mine = groups.filter((g) => isGroupMember(g, { userId: myUserId, nickname }));
   const filtered =
     filter === "mine" ? mine : groups.filter((g) => g.filter === filter);
@@ -169,33 +201,99 @@ export function FindTab({
     { key: "mine", label: "내 모임", count: counts.mine },
   ];
 
+  const onTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    const scroller = findScrollParent(event.currentTarget);
+    if (scroller && scroller.scrollTop > 0) {
+      startYRef.current = null;
+      return;
+    }
+    startYRef.current = event.touches[0].clientY;
+  };
+
+  const onTouchMove = (event: TouchEvent<HTMLDivElement>) => {
+    if (startYRef.current == null || refreshing) return;
+    const scroller = findScrollParent(event.currentTarget);
+    if (scroller && scroller.scrollTop > 0) {
+      startYRef.current = null;
+      setPullY(0);
+      return;
+    }
+    const dy = event.touches[0].clientY - startYRef.current;
+    setPullY(dy > 0 ? Math.min(88, dy * 0.42) : 0);
+  };
+
+  const onTouchEnd = () => {
+    if (startYRef.current == null) return;
+    startYRef.current = null;
+    if (pullYRef.current >= PULL_THRESHOLD) {
+      void onRefresh?.();
+      return;
+    }
+    setPullY(0);
+  };
+
+  const pullHeight = refreshing ? Math.max(pullY, 44) : pullY;
+  const showPullSpinner = refreshing || pullY >= PULL_THRESHOLD;
+
   return (
-    <div>
-      <div className="sticky top-0 z-20 flex gap-2 overflow-x-auto bg-[#121316]/95 px-4 py-3 backdrop-blur [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {chips.map((c) => {
-          const on = filter === c.key;
-          return (
-            <button
-              key={c.key}
-              type="button"
-              onClick={() => onFilterChange(c.key)}
-              className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] font-semibold transition-colors ${
-                on
-                  ? "border-[#00e599] bg-[#00e599] text-black"
-                  : "border-gray-700 bg-transparent text-gray-400"
-              }`}
-            >
-              {c.label}
-              <span
-                className={`rounded-full px-1.5 text-[11px] ${
-                  on ? "bg-black/20 text-black" : "bg-white/10 text-gray-300"
+    <div
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+    >
+      <div className="sticky top-0 z-20 flex items-center gap-2 bg-[#121316]/95 px-4 py-3 backdrop-blur">
+        <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {chips.map((c) => {
+            const on = filter === c.key;
+            return (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => onFilterChange(c.key)}
+                className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] font-semibold transition-colors ${
+                  on
+                    ? "border-[#00e599] bg-[#00e599] text-black"
+                    : "border-gray-700 bg-transparent text-gray-400"
                 }`}
               >
-                {c.count}
-              </span>
-            </button>
-          );
-        })}
+                {c.label}
+                <span
+                  className={`rounded-full px-1.5 text-[11px] ${
+                    on ? "bg-black/20 text-black" : "bg-white/10 text-gray-300"
+                  }`}
+                >
+                  {c.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {onRefresh ? (
+          <button
+            type="button"
+            aria-label="모임 목록 새로고침"
+            onClick={() => void onRefresh()}
+            disabled={refreshing}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-700 text-gray-400 transition-colors hover:border-gray-500 hover:text-white disabled:opacity-60"
+          >
+            <RefreshCw size={15} className={refreshing ? "animate-spin" : undefined} />
+          </button>
+        ) : null}
+      </div>
+
+      <div
+        className="flex items-center justify-center overflow-hidden text-gray-500 transition-[height] duration-150"
+        style={{ height: pullHeight }}
+        aria-hidden={pullHeight <= 0}
+      >
+        {pullHeight > 0 ? (
+          <Loader2
+            size={18}
+            className={showPullSpinner ? "animate-spin" : undefined}
+            style={{ opacity: Math.min(1, pullHeight / 36) }}
+          />
+        ) : null}
       </div>
 
       <div className="space-y-3 px-4 pb-28 pt-1">

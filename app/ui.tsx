@@ -49,13 +49,17 @@ export function Avatar({
   color,
   size = 32,
   ring = false,
+  ownerRing = false,
   src,
+  className = "",
 }: {
   name: string;
   color: string;
   size?: number;
   ring?: boolean;
+  ownerRing?: boolean;
   src?: string;
+  className?: string;
 }) {
   const [broken, setBroken] = useState(false);
 
@@ -73,22 +77,27 @@ export function Avatar({
 
   return (
     <span
-      className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full font-bold text-black/80 ${
-        ring ? "ring-2 ring-[#1B1D22]" : ""
-      }`}
+      className={`relative flex aspect-square shrink-0 items-center justify-center overflow-hidden rounded-full font-bold leading-none text-black/80 ${
+        ownerRing
+          ? "ring-2 ring-[#00E575] ring-offset-2 ring-offset-zinc-900"
+          : ring
+            ? "ring-2 ring-[#1B1D22]"
+            : ""
+      } ${className}`}
       style={style}
     >
       {showImage ? (
         <img
+          key={src}
           src={src}
           alt=""
-          width={size}
-          height={size}
-          className="h-full w-full rounded-full object-cover"
+          className="absolute inset-0 h-full w-full rounded-full object-cover"
           onError={() => setBroken(true)}
         />
       ) : (
-        initial(name)
+        <span className="flex h-full w-full items-center justify-center">
+          {initial(name)}
+        </span>
       )}
     </span>
   );
@@ -107,44 +116,43 @@ export function StackedAvatars({
   capacity,
   size = 30,
   ownerId,
+  showOwnerMark = true,
 }: {
   members: Member[];
   capacity: number;
   size?: number;
   ownerId?: string | null;
+  showOwnerMark?: boolean;
 }) {
-  const ordered = membersOwnerFirst(members, ownerId);
+  const ordered = membersOwnerFirst(members, showOwnerMark ? ownerId : null);
   const shown = ordered.slice(0, 4);
   const extra = ordered.length - shown.length;
   return (
-    <div className="flex items-center pt-1">
-      <div className="flex -space-x-2 overflow-visible">
+    <div className={`flex items-center ${showOwnerMark && ownerId ? "pt-2" : ""}`}>
+      <div className="flex items-center -space-x-2 overflow-visible">
         {shown.map((mem) => {
-          const isOwner = Boolean(ownerId && mem.id === ownerId);
+          const isOwner = Boolean(showOwnerMark && ownerId && mem.id === ownerId);
           return (
             <span
-              key={mem.id}
-              className={`relative inline-flex shrink-0 ${isOwner ? "z-20" : "z-0"}`}
+              key={`${mem.id}-${mem.avatar}`}
+              className={`relative flex shrink-0 items-center justify-center ${isOwner ? "z-20" : "z-0"}`}
+              style={{ width: size, height: size }}
               title={isOwner ? "방장" : mem.name}
             >
-              <img
-                src={mem.avatar}
-                alt={isOwner ? `${mem.name} (방장)` : mem.name}
-                width={size}
-                height={size}
-                className={`relative shrink-0 rounded-full object-cover ${
-                  isOwner
-                    ? "ring-2 ring-[#00e599] ring-offset-2 ring-offset-[#121212]"
-                    : "border-2 border-[#1B1D22]"
-                }`}
-                style={{ width: size, height: size }}
+              <Avatar
+                name={mem.name}
+                color={mem.color}
+                src={mem.avatar || undefined}
+                size={size}
+                ownerRing={isOwner}
+                ring={!isOwner}
               />
               {isOwner ? (
-                <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#121212]">
+                <span className="pointer-events-none absolute -top-2 right-0 z-10 flex h-3.5 w-3.5 items-center justify-center">
                   <Crown
-                    size={10}
+                    size={12}
                     strokeWidth={2.2}
-                    className="fill-amber-300 text-amber-300"
+                    className="fill-amber-300 text-amber-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
                     aria-hidden
                   />
                 </span>
@@ -154,7 +162,7 @@ export function StackedAvatars({
         })}
         {extra > 0 && (
           <span
-            className="relative z-0 inline-flex items-center justify-center rounded-full border-2 border-[#1B1D22] bg-[#2A2D34] text-[11px] font-semibold text-gray-300"
+            className="relative z-0 flex items-center justify-center rounded-full border-2 border-[#1B1D22] bg-[#2A2D34] text-[11px] font-semibold leading-none text-gray-300"
             style={{ width: size, height: size }}
           >
             +{extra}

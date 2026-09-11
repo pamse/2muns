@@ -8,6 +8,7 @@ import {
   Camera,
   Clock,
   Crown,
+  Loader2,
   LogOut,
   Pencil,
   ShieldCheck,
@@ -63,11 +64,13 @@ const PROFILE = {
 function ProfilePhotoButton({
   src,
   name,
+  uploading = false,
   onSelectFile,
 }: {
   src: string | null;
   name: string;
-  onSelectFile: (file: File) => void;
+  uploading?: boolean;
+  onSelectFile: (file: File) => void | Promise<void>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -88,11 +91,17 @@ function ProfilePhotoButton({
       type="button"
       onClick={openPicker}
       aria-label="프로필 사진 변경"
-      className="group relative shrink-0"
+      disabled={uploading}
+      className="group relative shrink-0 disabled:opacity-80"
     >
       <span className="relative block">
         <Avatar name={name} color={PROFILE.color} src={src ?? undefined} size={56} />
         <span className="pointer-events-none absolute inset-0 rounded-full bg-black/0 transition-colors group-hover:bg-black/45" />
+        {uploading ? (
+          <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50">
+            <Loader2 size={18} className="animate-spin text-white" />
+          </span>
+        ) : null}
       </span>
       <span className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#00FF87] text-black ring-2 ring-[#121316] transition group-hover:scale-110 group-hover:bg-[#4dffaa]">
         <Camera size={11} strokeWidth={2.4} />
@@ -225,6 +234,7 @@ export function MyTab({
   onChangeNickname,
   myProfileImage,
   onSelectProfileImage,
+  profileImageUploading = false,
 }: {
   onGoFind: () => void;
   onOpenRoom: (group: Group) => void;
@@ -237,7 +247,8 @@ export function MyTab({
   nicknameLockDays: number;
   onChangeNickname: (next: string) => Promise<void>;
   myProfileImage: string | null;
-  onSelectProfileImage: (file: File) => void;
+  onSelectProfileImage: (file: File) => void | Promise<void>;
+  profileImageUploading?: boolean;
 }) {
   const myGroups = useMemo(
     () => groups.filter((group) => isGroupMember(group, { userId: myUserId, nickname })),
@@ -323,6 +334,7 @@ export function MyTab({
         <ProfilePhotoButton
           src={myProfileImage}
           name={nickname || "나"}
+          uploading={profileImageUploading}
           onSelectFile={onSelectProfileImage}
         />
         <div className="flex-1">

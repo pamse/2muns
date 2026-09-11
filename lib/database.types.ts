@@ -122,18 +122,24 @@ export type Database = {
           id: string;
           group_id: string;
           user_id: string;
+          nickname: string | null;
+          avatar_url: string | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           group_id: string;
           user_id: string;
+          nickname?: string | null;
+          avatar_url?: string | null;
           created_at?: string;
         };
         Update: {
           id?: string;
           group_id?: string;
           user_id?: string;
+          nickname?: string | null;
+          avatar_url?: string | null;
           created_at?: string;
         };
         Relationships: [];

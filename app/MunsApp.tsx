@@ -1,11 +1,12 @@
 // 2müns — 앱 셸: 탭 전환 / 모달 / 룸 진입 등 전체 상태를 관리하는 루트 클라이언트 컴포넌트
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { addGroupMember, fetchAppGroups, removeGroupMember } from "@/lib/groups";
+import { addGroupMember, fetchAppGroups, overlayMyProfile, removeGroupMember } from "@/lib/groups";
+import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import {
   getGroupOwnerId,
   isGroupMember,
@@ -134,7 +135,7 @@ export default function MunsApp() {
   const [autoOpenVerify, setAutoOpenVerify] = useState(false);
   const pendingIntentRef = useRef<AuthIntent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const { src: myProfileImage, applyFile: applyProfileImage, clearImage } = useMyProfileImage();
+  const { src: myProfileImage, applyFile: applyProfileImage, clearImage, uploading: profileImageUploading } = useMyProfileImage();
   const {
     nickname,
     userId,
@@ -148,28 +149,121 @@ export default function MunsApp() {
   } = useNickname();
   const { notices, loading: noticesLoading, error: noticesError, refresh: refreshNotices, prependNotice } = useActiveNotices(userId, ready);
 
-  const refreshGroups = useCallback(async () => {
-    try {
-      const next = await fetchAppGroups();
-      setGroups(next);
-      setGroupsError(null);
-      setRoom((current) => {
-        if (!current) return current;
-        return next.find((item) => item.id === current.id) ?? current;
-      });
-      return next;
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "모임 목록을 불러오지 못했습니다.";
-      setGroupsError(message);
-      return null;
-    } finally {
-      setGroupsLoading(false);
+  const [groupsRefreshing, setGroupsRefreshing] = useState(false);
+  const refreshInFlightRef = useRef<Promise<Group[] | null> | null>(null);
+  const pendingRefreshRef = useRef(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshGroups = useCallback(async (options?: { showSpinner?: boolean }) => {
+    if (options?.showSpinner) setGroupsRefreshing(true);
+    if (refreshInFlightRef.current) {
+      pendingRefreshRef.current = true;
+      return refreshInFlightRef.current;
     }
+
+    const run = (async () => {
+      try {
+        let next: Group[] | null = null;
+        do {
+          pendingRefreshRef.current = false;
+          next = await fetchAppGroups();
+          setGroups(next);
+          setGroupsError(null);
+          setRoom((current) => {
+            if (!current) return current;
+            return next?.find((item) => item.id === current.id) ?? current;
+          });
+        } while (pendingRefreshRef.current);
+        return next;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "모임 목록을 불러오지 못했습니다.";
+        setGroupsError(message);
+        return null;
+      } finally {
+        refreshInFlightRef.current = null;
+        setGroupsLoading(false);
+        setGroupsRefreshing(false);
+      }
+    })();
+
+    refreshInFlightRef.current = run;
+    return run;
   }, []);
+
+  const scheduleRefreshGroups = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refreshGroups();
+    }, 250);
+  }, [refreshGroups]);
 
   useEffect(() => {
     void refreshGroups();
+  }, [refreshGroups]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("realtime_groups")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "groups" },
+        () => {
+          scheduleRefreshGroups();
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "group_members" },
+        () => {
+          scheduleRefreshGroups();
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "users" },
+        () => {
+          scheduleRefreshGroups();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [scheduleRefreshGroups]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      scheduleRefreshGroups();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        scheduleRefreshGroups();
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [scheduleRefreshGroups]);
+
+  useEffect(() => {
+    const onProfileUpdated = () => {
+      void refreshGroups();
+    };
+    window.addEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+    return () => {
+      window.removeEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+    };
   }, [refreshGroups]);
 
   useEffect(() => {
@@ -189,6 +283,15 @@ export default function MunsApp() {
   function isLoggedIn() {
     return ready && hasNickname;
   }
+
+  const visibleGroups = useMemo(
+    () => overlayMyProfile(groups, { userId, nickname, avatar: myProfileImage }),
+    [groups, userId, nickname, myProfileImage],
+  );
+  const visibleRoom = useMemo(() => {
+    if (!room) return null;
+    return overlayMyProfile([room], { userId, nickname, avatar: myProfileImage })[0] ?? room;
+  }, [room, userId, nickname, myProfileImage]);
 
   function requireAuth(intent: AuthIntent) {
     if (isLoggedIn()) return true;
@@ -252,7 +355,10 @@ export default function MunsApp() {
 
       if (userId) {
         try {
-          await addGroupMember(g.id, userId, joined.members.length);
+          await addGroupMember(g.id, userId, joined.members.length, {
+            nickname: joinNickname,
+            avatarUrl: myProfileImage,
+          });
         } catch (error) {
           console.error("group join failed", error);
         }
@@ -376,7 +482,7 @@ export default function MunsApp() {
           {tab === "info" && <InfoTab />}
           {tab === "find" && (
             <FindTab
-              groups={groups}
+              groups={visibleGroups}
               filter={filter}
               onFilterChange={setFilter}
               onOpenRoom={handleOpenRoom}
@@ -384,6 +490,8 @@ export default function MunsApp() {
               nickname={nickname}
               loading={groupsLoading}
               error={groupsError}
+              refreshing={groupsRefreshing}
+              onRefresh={() => refreshGroups({ showSpinner: true })}
             />
           )}
           {tab === "my" && (
@@ -394,7 +502,8 @@ export default function MunsApp() {
               onChangeNickname={changeNickname}
               myProfileImage={myProfileImage}
               onSelectProfileImage={applyProfileImage}
-              groups={groups}
+              profileImageUploading={profileImageUploading}
+              groups={visibleGroups}
               myUserId={userId}
               onOpenRoom={handleOpenRoom}
               onLogout={() => void handleLogout()}
@@ -450,9 +559,9 @@ export default function MunsApp() {
         )}
 
         {/* 오버레이들 */}
-        {room && (
+        {visibleRoom && (
           <RoomDetail
-            group={room}
+            group={visibleRoom}
             onBack={() => {
               setRoom(null);
               setAutoOpenVerify(false);
@@ -461,7 +570,7 @@ export default function MunsApp() {
             myAvatar={myProfileImage}
             userId={userId}
             requireAuth={() =>
-              requireAuth({ type: "verify", groupId: room.id })
+              requireAuth({ type: "verify", groupId: visibleRoom.id })
             }
             autoOpenVerify={autoOpenVerify}
             onAutoOpenVerifyHandled={() => setAutoOpenVerify(false)}

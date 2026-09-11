@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { dispatchProfileUpdated, syncProfileToSupabase } from "@/lib/profile";
 import { MY_PROFILE_IMAGE_KEY } from "./useMyProfileImage";
 
 export const NICKNAME_KEY = "my_nickname";
@@ -210,6 +211,9 @@ export function useNickname() {
           nickname_updated_at: updatedAt,
           selected_categories: selectedCategories,
         });
+        const id = getOrCreateUserId();
+        await syncProfileToSupabase({ userId: id, nickname: trimmed });
+        dispatchProfileUpdated({ userId: id, nickname: trimmed });
       } catch (error) {
         console.error("users upsert failed", error);
       }
@@ -250,6 +254,9 @@ export function useNickname() {
           nickname: trimmed,
           nickname_updated_at: updatedAt,
         });
+        const id = getOrCreateUserId();
+        await syncProfileToSupabase({ userId: id, nickname: trimmed });
+        dispatchProfileUpdated({ userId: id, nickname: trimmed });
       } catch (error) {
         console.error("users upsert failed", error);
       }

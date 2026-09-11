@@ -445,10 +445,18 @@ export function CreateGroupSheet({
       } else {
         groupInserted = true;
         if (ownerId) {
-          const { error: memberError } = await supabase.from("group_members").insert({
+          let { error: memberError } = await supabase.from("group_members").insert({
             group_id: id,
             user_id: ownerId,
+            nickname: ownerName || null,
+            avatar_url: ownerAvatar || null,
           });
+          if (memberError && (memberError.code === "PGRST204" || memberError.code === "42703")) {
+            ({ error: memberError } = await supabase.from("group_members").insert({
+              group_id: id,
+              user_id: ownerId,
+            }));
+          }
           if (memberError) {
             console.error("group_members insert failed", memberError);
           }

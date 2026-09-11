@@ -1,11 +1,11 @@
 import {
   GROUP_COVERS,
-  ME_AVATAR,
   memberColor,
   type Group,
   type GroupStatus,
   type Member,
 } from "@/app/data";
+import { cacheBustAvatarUrl } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
 import type { AppGroup, AppUser } from "@/lib/database.types";
 
@@ -118,7 +118,7 @@ export async function fetchAppGroups(): Promise<Group[]> {
       id: row.user_id,
       name: user?.nickname || "멤버",
       color: memberColor(list.length),
-      avatar: user?.avatar_url || ME_AVATAR,
+      avatar: user?.avatar_url ? cacheBustAvatarUrl(user.avatar_url, user.id) : "",
     });
     membersByGroup.set(row.group_id, list);
   }
@@ -126,11 +126,49 @@ export async function fetchAppGroups(): Promise<Group[]> {
   return groups.map((row) => mapAppGroup(row, membersByGroup.get(row.id) ?? []));
 }
 
-export async function addGroupMember(groupId: string, userId: string, memberCount: number) {
-  const { error } = await supabase.from("group_members").insert({
+export function overlayMyProfile(
+  groups: Group[],
+  me: { userId?: string | null; nickname?: string | null; avatar?: string | null },
+): Group[] {
+  const avatar = me.avatar?.trim() || "";
+  const nickname = me.nickname?.trim() || "";
+  if (!me.userId && !nickname && !avatar) return groups;
+
+  return groups.map((group) => ({
+    ...group,
+    members: group.members.map((member) => {
+      const isMe =
+        member.id === "me" || (Boolean(me.userId) && member.id === me.userId);
+      if (!isMe) return member;
+      return {
+        ...member,
+        name: nickname || member.name,
+        avatar: avatar || member.avatar,
+      };
+    }),
+  }));
+}
+
+export async function addGroupMember(
+  groupId: string,
+  userId: string,
+  memberCount: number,
+  profile?: { nickname?: string | null; avatarUrl?: string | null },
+) {
+  const row = {
     group_id: groupId,
     user_id: userId,
-  });
+    ...(profile?.nickname ? { nickname: profile.nickname } : {}),
+    ...(profile?.avatarUrl ? { avatar_url: profile.avatarUrl } : {}),
+  };
+
+  let { error } = await supabase.from("group_members").insert(row);
+  if (error && (error.code === "PGRST204" || error.code === "42703")) {
+    ({ error } = await supabase.from("group_members").insert({
+      group_id: groupId,
+      user_id: userId,
+    }));
+  }
   if (error && error.code !== "23505") {
     throw new Error(error.message || "모임 참여에 실패했습니다.");
   }
