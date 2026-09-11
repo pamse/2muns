@@ -4,6 +4,7 @@
 
 alter table if exists public.groups replica identity full;
 alter table if exists public.group_members replica identity full;
+alter table if exists public.users replica identity full;
 alter table if exists public.notices replica identity full;
 
 do $$

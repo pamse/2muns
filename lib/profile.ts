@@ -23,21 +23,45 @@ function extensionForImage(file: File) {
 
 export function cacheBustAvatarUrl(url: string | null | undefined, version?: string | number) {
   if (!url) return "";
-  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) {
-    return url;
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:") || trimmed.startsWith("/")) {
+    return trimmed;
   }
   const stamp = String(version ?? Date.now());
   try {
-    const parsed = new URL(url);
-    if (!parsed.searchParams.has("t")) {
-      parsed.searchParams.set("t", stamp);
-    }
+    const parsed = new URL(trimmed);
+    parsed.searchParams.delete("t");
+    parsed.searchParams.set("v", stamp);
     return parsed.toString();
   } catch {
-    if (/[?&]t=/.test(url)) return url;
-    const separator = url.includes("?") ? "&" : "?";
-    return `${url}${separator}t=${stamp}`;
+    const cleaned = trimmed.replace(/[?&](?:t|v)=[^&]*/g, "").replace(/[?&]$/, "");
+    const separator = cleaned.includes("?") ? "&" : "?";
+    return `${cleaned}${separator}v=${stamp}`;
   }
+}
+
+export function pickMemberAvatarUrl(member: {
+  avatar?: string | null;
+  avatar_url?: string | null;
+  image?: string | null;
+  src?: string | null;
+  profile?: { avatar_url?: string | null; avatarUrl?: string | null } | null;
+} | null | undefined) {
+  if (!member) return "";
+  const candidates = [
+    member.avatar,
+    member.avatar_url,
+    member.image,
+    member.src,
+    member.profile?.avatar_url,
+    member.profile?.avatarUrl,
+  ];
+  for (const value of candidates) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
 }
 
 export function dispatchProfileUpdated(detail: ProfileUpdatedDetail) {

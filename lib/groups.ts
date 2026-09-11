@@ -6,7 +6,7 @@ import {
   type Member,
 } from "@/app/data";
 import { challengeDayNumber } from "@/lib/dates";
-import { cacheBustAvatarUrl } from "@/lib/profile";
+import { cacheBustAvatarUrl, pickMemberAvatarUrl } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
 import type { AppGroup, AppUser } from "@/lib/database.types";
 
@@ -76,47 +76,81 @@ export function mapAppGroup(row: AppGroup, members: Member[]): Group {
   };
 }
 
+type MemberRow = {
+  group_id: string;
+  user_id: string;
+  nickname?: string | null;
+  avatar_url?: string | null;
+};
+
+function pickProfileText(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
+function resolvedMemberAvatar(row: MemberRow, profile: AppUser | null) {
+  const raw = pickMemberAvatarUrl({
+    avatar_url: profile?.avatar_url ?? row.avatar_url,
+    profile,
+    avatar: row.avatar_url,
+  });
+  return raw ? cacheBustAvatarUrl(raw, `${row.user_id}:${raw}`) : "";
+}
+
+async function fetchMemberships(groupIds: string[]): Promise<MemberRow[]> {
+  const { data, error } = await supabase
+    .from("group_members")
+    .select("*")
+    .in("group_id", groupIds);
+
+  if (error) {
+    throw new Error(error.message || "모임 멤버를 불러오지 못했습니다.");
+  }
+
+  return (data ?? []) as MemberRow[];
+}
+
+async function fetchProfilesByUserIds(userIds: string[]): Promise<Map<string, AppUser>> {
+  const profilesById = new Map<string, AppUser>();
+  if (userIds.length === 0) return profilesById;
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, nickname, avatar_url")
+    .in("id", userIds);
+
+  if (error) {
+    return profilesById;
+  }
+
+  for (const row of data ?? []) {
+    const profile = row as AppUser;
+    if (profile.id) profilesById.set(profile.id, profile);
+  }
+
+  return profilesById;
+}
+
 async function hydrateGroups(groupRows: AppGroup[]): Promise<Group[]> {
   if (groupRows.length === 0) return [];
 
   const ids = groupRows.map((row) => row.id);
-  const { data: memberRows, error: memberError } = await supabase
-    .from("group_members")
-    .select("group_id, user_id")
-    .in("group_id", ids);
-
-  if (memberError) {
-    throw new Error(memberError.message || "모임 멤버를 불러오지 못했습니다.");
-  }
-
-  const memberships = memberRows ?? [];
-  const userIds = [...new Set(memberships.map((row) => row.user_id))];
-  const usersById = new Map<string, AppUser>();
-
-  if (userIds.length > 0) {
-    const { data: userRows, error: userError } = await supabase
-      .from("users")
-      .select("id, nickname, avatar_url")
-      .in("id", userIds);
-
-    if (userError) {
-      console.error("users select failed", userError);
-    } else {
-      for (const user of userRows ?? []) {
-        usersById.set(user.id, user as AppUser);
-      }
-    }
-  }
+  const memberships = await fetchMemberships(ids);
+  const userIds = [...new Set(memberships.map((row) => row.user_id).filter(Boolean))];
+  const profilesById = await fetchProfilesByUserIds(userIds);
 
   const membersByGroup = new Map<string, Member[]>();
   for (const row of memberships) {
-    const user = usersById.get(row.user_id);
+    const profile = profilesById.get(row.user_id) ?? null;
     const list = membersByGroup.get(row.group_id) ?? [];
     list.push({
       id: row.user_id,
-      name: user?.nickname || "멤버",
+      name: pickProfileText(profile?.nickname, row.nickname, "멤버") || "멤버",
       color: memberColor(list.length),
-      avatar: user?.avatar_url ? cacheBustAvatarUrl(user.avatar_url, user.id) : "",
+      avatar: resolvedMemberAvatar(row, profile),
     });
     membersByGroup.set(row.group_id, list);
   }
@@ -179,7 +213,8 @@ export function overlayMyProfile(
   groups: Group[],
   me: { userId?: string | null; nickname?: string | null; avatar?: string | null },
 ): Group[] {
-  const avatar = me.avatar?.trim() || "";
+  const rawAvatar = me.avatar?.trim() || "";
+  const avatar = rawAvatar ? cacheBustAvatarUrl(rawAvatar, rawAvatar) : "";
   const nickname = me.nickname?.trim() || "";
   if (!me.userId && !nickname && !avatar) return groups;
 
@@ -189,6 +224,28 @@ export function overlayMyProfile(
       const isMe =
         member.id === "me" || (Boolean(me.userId) && member.id === me.userId);
       if (!isMe) return member;
+      return {
+        ...member,
+        name: nickname || member.name,
+        avatar: avatar || member.avatar,
+      };
+    }),
+  }));
+}
+
+export function applyUserProfileToGroups(
+  groups: Group[],
+  row: { id?: string | null; nickname?: string | null; avatar_url?: string | null },
+): Group[] {
+  if (!row.id) return groups;
+  const nickname = row.nickname?.trim() || "";
+  const avatar = cacheBustAvatarUrl(row.avatar_url, Date.now());
+  if (!nickname && !avatar) return groups;
+
+  return groups.map((group) => ({
+    ...group,
+    members: group.members.map((member) => {
+      if (member.id !== row.id) return member;
       return {
         ...member,
         name: nickname || member.name,

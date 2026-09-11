@@ -1,12 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, Loader2, RotateCcw, X } from "lucide-react";
+import { Camera, Loader2, RotateCcw, SwitchCamera, X } from "lucide-react";
 
 type Phase = "live" | "countdown" | "recording" | "review";
+type FacingMode = "user" | "environment";
 
 const RECORD_MS = 3000;
 const COMMENT_MAX = 20;
+const VIDEO_BASE: MediaTrackConstraints = {
+  width: { ideal: 720 },
+  height: { ideal: 1280 },
+  frameRate: { ideal: 30 },
+};
 
 function pickRecorderOptions(): MediaRecorderOptions | undefined {
   const types = [
@@ -21,6 +27,38 @@ function pickRecorderOptions(): MediaRecorderOptions | undefined {
 
 function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop());
+}
+
+async function requestUserMedia(video: MediaTrackConstraints | boolean) {
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video, audio: true });
+  } catch {
+    return await navigator.mediaDevices.getUserMedia({ video });
+  }
+}
+
+async function getCameraStream(facingMode: FacingMode) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("unsupported");
+  }
+
+  const attempts: Array<MediaTrackConstraints | boolean> = [
+    { ...VIDEO_BASE, facingMode: { exact: facingMode } },
+    { ...VIDEO_BASE, facingMode: { ideal: facingMode } },
+    { ...VIDEO_BASE, facingMode },
+    VIDEO_BASE,
+    true,
+  ];
+
+  let lastError: unknown;
+  for (const video of attempts) {
+    try {
+      return await requestUserMedia(video);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("camera");
 }
 
 export function CameraVerifyModal({
@@ -52,6 +90,8 @@ export function CameraVerifyModal({
   const [starting, setStarting] = useState(false);
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [facingMode, setFacingMode] = useState<FacingMode>("environment");
+  const [flipDeg, setFlipDeg] = useState(0);
 
   const clearTimers = useCallback(() => {
     if (countdownRef.current != null) {
@@ -91,10 +131,11 @@ export function CameraVerifyModal({
 
   useEffect(() => {
     if (!open) {
+      setFacingMode("environment");
+      setFlipDeg(0);
       return;
     }
 
-    let cancelled = false;
     closedRef.current = false;
     setPhase("live");
     setCount(3);
@@ -105,6 +146,12 @@ export function CameraVerifyModal({
     setSubmitting(false);
     armedRef.current = false;
     revokeReview();
+  }, [open, revokeReview]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    let cancelled = false;
 
     async function startCamera() {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -112,38 +159,32 @@ export function CameraVerifyModal({
         return;
       }
 
-      const videoConstraints: MediaTrackConstraints = {
-        facingMode: { ideal: "user" },
-        width: { ideal: 720 },
-        height: { ideal: 1280 },
-        frameRate: { ideal: 30 },
-      };
-
       try {
-        let stream: MediaStream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: videoConstraints,
-            audio: true,
-          });
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: videoConstraints,
-          });
+        stopStream(streamRef.current);
+        streamRef.current = null;
+        if (liveRef.current) {
+          liveRef.current.srcObject = null;
         }
 
+        const stream = await getCameraStream(facingMode);
         if (cancelled) {
           stopStream(stream);
           return;
         }
-
         streamRef.current = stream;
         if (liveRef.current) {
           liveRef.current.srcObject = stream;
           await liveRef.current.play().catch(() => undefined);
         }
+        setError((prev) =>
+          prev?.startsWith("카메라 권한이 필요합니다") ||
+          prev === "이 브라우저에서는 카메라를 사용할 수 없습니다."
+            ? null
+            : prev,
+        );
       } catch {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (!streamRef.current) {
           setError("카메라 권한이 필요합니다. 브라우저에서 카메라 접근을 허용해 주세요.");
         }
       }
@@ -153,6 +194,13 @@ export function CameraVerifyModal({
 
     return () => {
       cancelled = true;
+    };
+  }, [open, facingMode]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    return () => {
       closedRef.current = true;
       clearTimers();
       stopRecorder();
@@ -166,7 +214,7 @@ export function CameraVerifyModal({
         reviewUrlRef.current = null;
       }
     };
-  }, [open, clearTimers, stopRecorder, revokeReview]);
+  }, [open, clearTimers, stopRecorder]);
 
   const startRecording = useCallback(() => {
     const stream = streamRef.current;
@@ -292,9 +340,15 @@ export function CameraVerifyModal({
     }
   }
 
-  if (!open) return null;
-
   const busy = phase === "countdown" || phase === "recording" || submitting;
+
+  function flipCamera() {
+    if (busy) return;
+    setFlipDeg((deg) => deg + 180);
+    setFacingMode((mode) => (mode === "user" ? "environment" : "user"));
+  }
+
+  if (!open) return null;
 
   return (
     <div className="absolute inset-0 z-[55] flex flex-col bg-black">
@@ -320,7 +374,7 @@ export function CameraVerifyModal({
           ref={liveRef}
           className={`h-full w-full object-cover ${
             phase === "review" ? "hidden" : "block"
-          } -scale-x-100`}
+          } ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
           autoPlay
           muted
           playsInline
@@ -367,19 +421,35 @@ export function CameraVerifyModal({
 
       <div className="shrink-0 space-y-2 px-4 pb-6 pt-4">
         {phase === "live" || phase === "countdown" || phase === "recording" ? (
-          <button
-            type="button"
-            onClick={startCountdown}
-            disabled={busy || Boolean(error)}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#00FF87] py-3.5 text-sm font-bold text-black active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Camera size={18} strokeWidth={2.4} />
-            {phase === "countdown"
-              ? "잠시 후 촬영됩니다"
-              : phase === "recording"
-                ? "3초 촬영 중"
-                : "촬영 시작"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={startCountdown}
+              disabled={busy || Boolean(error)}
+              className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-[#00FF87] py-3.5 text-sm font-bold text-black active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Camera size={18} strokeWidth={2.4} />
+              {phase === "countdown"
+                ? "잠시 후 촬영됩니다"
+                : phase === "recording"
+                  ? "3초 촬영 중"
+                  : "촬영 시작"}
+            </button>
+            <button
+              type="button"
+              onClick={flipCamera}
+              disabled={busy}
+              aria-label="카메라 전환"
+              className="shrink-0 rounded-full border border-white/20 bg-black/40 p-3 text-white backdrop-blur-md transition-transform active:scale-95 disabled:opacity-40"
+            >
+              <span
+                className="flex transition-transform duration-300 ease-out"
+                style={{ transform: `rotate(${flipDeg}deg)` }}
+              >
+                <SwitchCamera className="h-5 w-5" />
+              </span>
+            </button>
+          </div>
         ) : (
           <div className="space-y-2">
             <label className="block">

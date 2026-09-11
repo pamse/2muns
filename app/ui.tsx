@@ -4,6 +4,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Crown } from "lucide-react";
 import { type Member, initial } from "./data";
+import { cacheBustAvatarUrl, pickMemberAvatarUrl } from "@/lib/profile";
 
 /** 브랜드 로고 — 'ü'만 네온그린으로 강조 */
 export function Logo({ className = "" }: { className?: string }) {
@@ -92,6 +93,7 @@ export function Avatar({
           src={src}
           alt=""
           className="absolute inset-0 h-full w-full rounded-full object-cover"
+          referrerPolicy="no-referrer"
           onError={() => setBroken(true)}
         />
       ) : (
@@ -132,9 +134,13 @@ export function StackedAvatars({
       <div className="flex items-center -space-x-2 overflow-visible">
         {shown.map((mem) => {
           const isOwner = Boolean(showOwnerMark && ownerId && mem.id === ownerId);
+          const rawAvatar = pickMemberAvatarUrl(mem);
+          const avatarSrc = rawAvatar
+            ? cacheBustAvatarUrl(rawAvatar, `${mem.id}:${rawAvatar}`)
+            : "";
           return (
             <span
-              key={`${mem.id}-${mem.avatar}`}
+              key={`${mem.id}-${avatarSrc || mem.name}`}
               className={`relative flex shrink-0 items-center justify-center ${isOwner ? "z-20" : "z-0"}`}
               style={{ width: size, height: size }}
               title={isOwner ? "방장" : mem.name}
@@ -142,7 +148,7 @@ export function StackedAvatars({
               <Avatar
                 name={mem.name}
                 color={mem.color}
-                src={mem.avatar || undefined}
+                src={avatarSrc || undefined}
                 size={size}
                 ownerRing={isOwner}
                 ring={!isOwner}

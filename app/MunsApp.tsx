@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { addGroupMember, fetchAppGroups, overlayMyProfile, removeGroupMember } from "@/lib/groups";
+import { addGroupMember, applyUserProfileToGroups, fetchAppGroups, overlayMyProfile, removeGroupMember } from "@/lib/groups";
 import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import {
   getGroupOwnerId,
@@ -217,14 +217,40 @@ export default function MunsApp() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "group_members" },
-        () => {
+        (payload) => {
+          const row = payload.new as {
+            group_id?: string;
+            user_id?: string;
+            nickname?: string | null;
+            avatar_url?: string | null;
+          };
+          if (row?.user_id) {
+            const patched = {
+              id: row.user_id,
+              nickname: row.nickname,
+              avatar_url: row.avatar_url,
+            };
+            setGroups((prev) => applyUserProfileToGroups(prev, patched));
+            setRoom((prev) =>
+              prev ? applyUserProfileToGroups([prev], patched)[0] ?? prev : prev,
+            );
+          }
           scheduleRefreshGroups();
         },
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "users" },
-        () => {
+        (payload) => {
+          const row = payload.new as {
+            id?: string;
+            nickname?: string | null;
+            avatar_url?: string | null;
+          };
+          setGroups((prev) => applyUserProfileToGroups(prev, row));
+          setRoom((prev) =>
+            prev ? applyUserProfileToGroups([prev], row)[0] ?? prev : prev,
+          );
           scheduleRefreshGroups();
         },
       )
