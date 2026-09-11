@@ -25,9 +25,21 @@ function coverForId(id: string) {
   return GROUP_COVERS[Math.abs(hash) % GROUP_COVERS.length];
 }
 
+export function isStartedGroupStatus(
+  status?: string | null,
+  startedAt?: string | null,
+) {
+  const value = (status || "").trim().toLowerCase();
+  return (
+    value === "started" ||
+    value === "ongoing" ||
+    value === "active" ||
+    Boolean(startedAt)
+  );
+}
+
 export function challengeDayFromStart(startedAt: string | null | undefined, status: string | null | undefined) {
-  const started = status === "started" || status === "ongoing";
-  if (!started) return 0;
+  if (!isStartedGroupStatus(status, startedAt)) return 0;
   if (!startedAt) return 1;
   const start = new Date(startedAt);
   if (Number.isNaN(start.getTime())) return 1;
@@ -38,15 +50,15 @@ export function challengeDayFromStart(startedAt: string | null | undefined, stat
   return Math.max(1, Math.min(TOTAL_DAYS, days));
 }
 
-function mapStatus(status: string | null | undefined): { filter: GroupStatus; raceStatus: Group["raceStatus"] } {
-  if (status === "started" || status === "ongoing") {
+function mapStatus(status: string | null | undefined, startedAt?: string | null): { filter: GroupStatus; raceStatus: Group["raceStatus"] } {
+  if (isStartedGroupStatus(status, startedAt)) {
     return { filter: "ongoing", raceStatus: "started" };
   }
   return { filter: "joinable", raceStatus: "recruiting" };
 }
 
 export function mapAppGroup(row: AppGroup, members: Member[]): Group {
-  const { filter, raceStatus } = mapStatus(row.status);
+  const { filter, raceStatus } = mapStatus(row.status, row.started_at);
   return {
     id: row.id,
     name: row.title,
@@ -68,20 +80,10 @@ export function mapAppGroup(row: AppGroup, members: Member[]): Group {
   };
 }
 
-export async function fetchAppGroups(): Promise<Group[]> {
-  const { data: groupRows, error: groupError } = await supabase
-    .from("groups")
-    .select("*")
-    .order("created_at", { ascending: false });
+async function hydrateGroups(groupRows: AppGroup[]): Promise<Group[]> {
+  if (groupRows.length === 0) return [];
 
-  if (groupError) {
-    throw new Error(groupError.message || "모임 목록을 불러오지 못했습니다.");
-  }
-
-  const groups = (groupRows ?? []) as AppGroup[];
-  if (groups.length === 0) return [];
-
-  const ids = groups.map((row) => row.id);
+  const ids = groupRows.map((row) => row.id);
   const { data: memberRows, error: memberError } = await supabase
     .from("group_members")
     .select("group_id, user_id")
@@ -123,7 +125,58 @@ export async function fetchAppGroups(): Promise<Group[]> {
     membersByGroup.set(row.group_id, list);
   }
 
-  return groups.map((row) => mapAppGroup(row, membersByGroup.get(row.id) ?? []));
+  return groupRows.map((row) => mapAppGroup(row, membersByGroup.get(row.id) ?? []));
+}
+
+export async function fetchAppGroups(): Promise<Group[]> {
+  const { data: groupRows, error: groupError } = await supabase
+    .from("groups")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (groupError) {
+    throw new Error(groupError.message || "모임 목록을 불러오지 못했습니다.");
+  }
+
+  return hydrateGroups((groupRows ?? []) as AppGroup[]);
+}
+
+export async function fetchAppGroupById(id: string): Promise<Group | null> {
+  const { data, error } = await supabase
+    .from("groups")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "모임 정보를 불러오지 못했습니다.");
+  }
+  if (!data) return null;
+  const [group] = await hydrateGroups([data as AppGroup]);
+  return group ?? null;
+}
+
+export async function startGroupRace(groupId: string, startedAt: string) {
+  const attempts: Array<{ status?: string; started_at: string }> = [
+    { status: "started", started_at: startedAt },
+    { status: "active", started_at: startedAt },
+    { status: "ongoing", started_at: startedAt },
+    { started_at: startedAt },
+  ];
+
+  for (const patch of attempts) {
+    const { data, error } = await supabase
+      .from("groups")
+      .update(patch)
+      .eq("id", groupId)
+      .select("id, status, started_at")
+      .maybeSingle();
+    if (!error && data) {
+      return data;
+    }
+    console.error("groups race start update failed", error, patch);
+  }
+  return null;
 }
 
 export function overlayMyProfile(

@@ -1,20 +1,22 @@
 // 2müns — 모임 상세 룸 (Setlog 스타일 2×3 일일 인증 현황)
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Camera, ChevronLeft, ChevronRight, Download, Loader2, Lock, Users } from "lucide-react";
 import { CameraVerifyModal } from "./CameraVerifyModal";
 import {
   getGroupOwnerId,
   hasRaceStarted,
+  isGroupMember,
   isGroupOwner,
   ME_AVATAR,
   type Group,
   type Member,
 } from "./data";
-import { removeGroupMember } from "@/lib/groups";
+import { fetchAppGroupById, isStartedGroupStatus, removeGroupMember, startGroupRace } from "@/lib/groups";
 import { supabase } from "@/lib/supabase";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { Notice, Verification } from "@/lib/database.types";
 import {
   fetchVerifications,
@@ -23,6 +25,8 @@ import {
   verificationVideoUrl,
 } from "@/lib/verifications";
 import { Avatar, GroupThumb, Pill, StackedAvatars } from "./ui";
+
+const RACE_START_TOAST = "🎉 레이스가 시작되었습니다! 오늘의 인증을 완료해보세요.";
 
 type Seat = {
   id: string;
@@ -493,21 +497,29 @@ function LobbyConfirmModal({
 function WaitingLobby({
   group,
   isOwner,
+  isMember,
   starting,
+  joining,
   onStart,
   onLeave,
   onDelete,
+  onJoin,
 }: {
   group: Group;
   isOwner: boolean;
+  isMember: boolean;
   starting: boolean;
+  joining: boolean;
   onStart: () => void;
   onLeave: () => void;
   onDelete: () => void;
+  onJoin: () => void;
 }) {
   const memberCount = group.members.length;
   const canStart = memberCount >= 2;
   const capacity = group.capacity;
+  const full = memberCount >= capacity;
+  const isGuest = !isOwner && !isMember;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -516,13 +528,17 @@ function WaitingLobby({
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#00e599]/12">
             <Users size={22} className="text-[#00e599]" />
           </div>
-          <h2 className="text-center text-lg font-bold text-white">멤버 대기 라운지</h2>
+          <h2 className="text-center text-lg font-bold text-white">
+            {isGuest ? "모임 미리보기" : "멤버 대기 라운지"}
+          </h2>
           <p className="mt-1.5 text-center text-[13px] leading-relaxed text-zinc-400">
-            {isOwner
-              ? canStart
-                ? "모인 인원으로 언제든 레이스를 시작할 수 있어요."
-                : "함께할 멤버를 1명 이상 기다리고 있어요"
-              : "방장이 66일 레이스를 시작하기를 기다리고 있어요."}
+            {isGuest
+              ? "참여하기 전에 모임 소개와 규칙을 확인해 보세요."
+              : isOwner
+                ? canStart
+                  ? "모인 인원으로 언제든 레이스를 시작할 수 있어요."
+                  : "함께할 멤버를 1명 이상 기다리고 있어요"
+                : "방장이 66일 레이스를 시작하기를 기다리고 있어요."}
           </p>
           <WaitingInfoCard group={group} />
           <div className="pb-1">
@@ -565,6 +581,21 @@ function WaitingLobby({
             </button>
           </div>
         </div>
+      ) : isGuest ? (
+        <div className="shrink-0 px-4 pb-4 pt-2">
+          <button
+            type="button"
+            disabled={full || joining}
+            onClick={onJoin}
+            className={`w-full rounded-2xl py-3.5 font-bold transition-all ${
+              full || joining
+                ? "cursor-not-allowed bg-zinc-700 text-zinc-400"
+                : "bg-[#00e599] text-black shadow-[0_0_20px_rgba(0,229,153,0.35)] hover:scale-[1.02] active:scale-[0.98]"
+            }`}
+          >
+            {joining ? "참여하는 중..." : full ? "모집 마감" : "이 모임 참여하기"}
+          </button>
+        </div>
       ) : (
         <div className="shrink-0 px-4 pb-4 pt-1 text-center">
           <p className="text-xs text-zinc-500">시작되면 알림으로 알려드릴게요</p>
@@ -592,6 +623,7 @@ export function RoomDetail({
   onNoticesRefresh,
   onLeaveGroup,
   onDeleteGroup,
+  onJoinGroup,
   requireAuth,
   autoOpenVerify = false,
   onAutoOpenVerifyHandled,
@@ -606,6 +638,7 @@ export function RoomDetail({
   onNoticesRefresh?: () => void;
   onLeaveGroup?: (group: Group) => void;
   onDeleteGroup?: (groupId: string) => void;
+  onJoinGroup?: (group: Group) => void | Promise<void>;
   requireAuth?: () => boolean;
   autoOpenVerify?: boolean;
   onAutoOpenVerifyHandled?: () => void;
@@ -616,6 +649,9 @@ export function RoomDetail({
   const [feedError, setFeedError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [startBanner, setStartBanner] = useState<string | null>(null);
+  const [forcedStarted, setForcedStarted] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"leave" | "delete" | null>(null);
   const [busy, setBusy] = useState(false);
   const currentDay = Math.max(1, group.day);
@@ -635,11 +671,170 @@ export function RoomDetail({
     onAutoOpenVerifyHandled?.();
   }, [autoOpenVerify, onAutoOpenVerifyHandled]);
 
-  const started = hasRaceStarted(group);
+  const started = hasRaceStarted(group) || forcedStarted;
   const owner = isGroupOwner(group, userId);
+  const isMember = owner || isGroupMember(group, { userId, nickname });
   const challengeDay = weekIndex * 7 + dayOffset + 1;
   const viewingToday = challengeDay === currentDay;
   const maxWeek = Math.max(0, Math.floor((currentDay - 1) / 7));
+  const startedRef = useRef(started);
+  const announcedRef = useRef(false);
+  const ownerRef = useRef(owner);
+  const groupRef = useRef(group);
+  const onGroupUpdateRef = useRef(onGroupUpdate);
+  const onRaceNoticesRef = useRef(onRaceNotices);
+  const onNoticesRefreshRef = useRef(onNoticesRefresh);
+  const channelRef = useRef<RealtimeChannel | null>(null);
+
+  startedRef.current = started;
+  ownerRef.current = owner;
+  groupRef.current = group;
+  onGroupUpdateRef.current = onGroupUpdate;
+  onRaceNoticesRef.current = onRaceNotices;
+  onNoticesRefreshRef.current = onNoticesRefresh;
+
+  const announceRaceStart = useCallback(
+    (next: Group) => {
+      setForcedStarted(true);
+      startedRef.current = true;
+      onGroupUpdateRef.current?.(next);
+      if (announcedRef.current || ownerRef.current) return;
+      announcedRef.current = true;
+      setStartBanner(RACE_START_TOAST);
+      onRaceNoticesRef.current?.({
+        id: crypto.randomUUID(),
+        title: `[${next.name}] 66일 레이스가 시작되었습니다!`,
+        content: RACE_START_TOAST,
+        tag: "시작",
+        is_active: true,
+        user_id: userId ?? null,
+        created_at: new Date().toISOString(),
+      });
+      onNoticesRefreshRef.current?.();
+    },
+    [userId],
+  );
+
+  const fetchGroupDetail = useCallback(async () => {
+    try {
+      const next = await fetchAppGroupById(group.id);
+      if (!next) return null;
+      if (hasRaceStarted(next)) {
+        announceRaceStart(next);
+      } else {
+        onGroupUpdateRef.current?.(next);
+      }
+      return next;
+    } catch (error) {
+      console.error("group detail fetch failed", error);
+      return null;
+    }
+  }, [announceRaceStart, group.id]);
+
+  useEffect(() => {
+    announcedRef.current = hasRaceStarted(group);
+    setForcedStarted(hasRaceStarted(group));
+    setStartBanner(null);
+  }, [group.id]);
+
+  useEffect(() => {
+    if (!startBanner) return;
+    const timer = window.setTimeout(() => setStartBanner(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [startBanner]);
+
+  useEffect(() => {
+    const groupId = group.id;
+    const applyIfStarted = (status?: string | null, startedAt?: string | null) => {
+      if (!isStartedGroupStatus(status, startedAt)) {
+        void fetchGroupDetail();
+        return false;
+      }
+      announceRaceStart({
+        ...groupRef.current,
+        raceStatus: "started",
+        filter: "ongoing",
+        day: Math.max(1, groupRef.current.day || 1),
+      });
+      void fetchGroupDetail();
+      return true;
+    };
+
+    const channel = supabase
+      .channel(`group_${groupId}`, {
+        config: { broadcast: { ack: true, self: false } },
+      })
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "groups",
+          filter: `id=eq.${groupId}`,
+        },
+        (payload) => {
+          const row = payload.new as {
+            id?: string;
+            status?: string | null;
+            started_at?: string | null;
+          };
+          applyIfStarted(row.status, row.started_at);
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "groups" },
+        (payload) => {
+          const row = payload.new as {
+            id?: string;
+            status?: string | null;
+            started_at?: string | null;
+          };
+          if (row.id && String(row.id) !== String(groupId)) return;
+          applyIfStarted(row.status, row.started_at);
+        },
+      )
+      .on("broadcast", { event: "race_started" }, (message) => {
+        const payload = (message.payload ?? {}) as {
+          status?: string | null;
+          started_at?: string | null;
+        };
+        applyIfStarted(payload.status ?? "started", payload.started_at ?? new Date().toISOString());
+      })
+      .subscribe();
+
+    channelRef.current = channel;
+
+    return () => {
+      channelRef.current = null;
+      void supabase.removeChannel(channel);
+    };
+  }, [announceRaceStart, fetchGroupDetail, group.id]);
+
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "hidden") return;
+      void fetchGroupDetail();
+    };
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    window.addEventListener("focus", refreshIfVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("focus", refreshIfVisible);
+    };
+  }, [fetchGroupDetail]);
+
+  useEffect(() => {
+    void fetchGroupDetail();
+  }, [fetchGroupDetail]);
+
+  useEffect(() => {
+    if (started) return;
+    const timer = window.setInterval(() => {
+      void fetchGroupDetail();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [fetchGroupDetail, started]);
 
   useEffect(() => {
     if (!started) return;
@@ -760,11 +955,11 @@ export function RoomDetail({
   async function handleStartRace() {
     if (starting || started || group.members.length < 2) return;
     setStarting(true);
+    startedRef.current = true;
 
     const now = new Date().toISOString();
     const title = `[${group.name}] 66일 레이스가 시작되었습니다!`;
-    const content =
-      "방장이 레이스를 시작했습니다. 오늘부터 매일 3초 실시간 인증을 완료해 주세요!";
+    const content = RACE_START_TOAST;
     const memberIds = collectMemberIds(group);
 
     const localNotice: Notice = {
@@ -785,6 +980,7 @@ export function RoomDetail({
       day: 1,
     };
     onGroupUpdate?.(updated);
+    setForcedStarted(true);
 
     const rows = memberIds.map((id) => ({
       user_id: id,
@@ -797,10 +993,18 @@ export function RoomDetail({
     const uuidRows = rows.filter((row) => UUID_RE.test(row.user_id));
 
     try {
-      await supabase
-        .from("groups")
-        .update({ status: "started", started_at: now })
-        .eq("id", group.id);
+      const saved = await startGroupRace(group.id, now);
+      if (!saved) {
+        console.error("groups status update failed");
+      }
+      await channelRef.current?.send({
+        type: "broadcast",
+        event: "race_started",
+        payload: {
+          status: saved?.status ?? "started",
+          started_at: saved?.started_at ?? now,
+        },
+      });
     } catch (error) {
       console.error("groups status update failed", error);
     }
@@ -841,8 +1045,18 @@ export function RoomDetail({
     }
   }
 
+  async function handleJoin() {
+    if (joining || isMember || group.members.length >= group.capacity) return;
+    setJoining(true);
+    try {
+      await onJoinGroup?.(group);
+    } finally {
+      setJoining(false);
+    }
+  }
+
   async function handleLeave() {
-    if (busy || owner) return;
+    if (busy || owner || !isMember) return;
     setBusy(true);
     const remaining = group.members.filter((member) => !isCurrentMember(member, userId));
     const updated: Group = { ...group, members: remaining };
@@ -889,10 +1103,21 @@ export function RoomDetail({
               ? viewingToday
                 ? `오늘 인증 ${doneCount}/6 · D-${group.total - group.day}`
                 : `${challengeDay}일차 인증 ${doneCount}/6`
-              : `대기 중 · ${group.members.length}/${group.capacity}명`}
+              : isMember
+                ? `대기 중 · ${group.members.length}/${group.capacity}명`
+                : `둘러보기 · ${group.members.length}/${group.capacity}명`}
           </p>
         </div>
       </header>
+
+      {startBanner ? (
+        <div
+          role="status"
+          className="shrink-0 border-b border-[#00e599]/30 bg-[#00e599]/12 px-4 py-2.5 text-center text-[13px] font-semibold leading-snug text-[#00e599]"
+        >
+          {startBanner}
+        </div>
+      ) : null}
 
       {started ? (
         <>
@@ -945,10 +1170,13 @@ export function RoomDetail({
         <WaitingLobby
           group={group}
           isOwner={owner}
+          isMember={isMember}
           starting={starting}
+          joining={joining}
           onStart={() => void handleStartRace()}
           onLeave={() => setConfirmAction("leave")}
           onDelete={() => setConfirmAction("delete")}
+          onJoin={() => void handleJoin()}
         />
       )}
 

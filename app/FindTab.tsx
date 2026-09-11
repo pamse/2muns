@@ -1,9 +1,9 @@
 // 2müns — '모임찾기' 탭 (메인 홈): 필터 + 모임 카드 리스트
 "use client";
 
-import { useEffect, useRef, useState, type TouchEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronRight, Flame, Loader2, Lock, Plus, RefreshCw, Users } from "lucide-react";
+import { ChevronRight, Flame, Loader2, Lock, Plus, Users } from "lucide-react";
 import { isGroupMember, type Group, type GroupFilter } from "./data";
 import { Card, GroupThumb, Pill, ProgressBar, StackedAvatars } from "./ui";
 
@@ -63,7 +63,9 @@ export function EntryDeniedModal({
   );
 }
 
-const PULL_THRESHOLD = 56;
+const PULL_THRESHOLD = 64;
+const PULL_MAX = 96;
+const PULL_REST = 56;
 
 function findScrollParent(el: HTMLElement) {
   let node: HTMLElement | null = el.parentElement;
@@ -73,6 +75,28 @@ function findScrollParent(el: HTMLElement) {
     node = node.parentElement;
   }
   return (document.scrollingElement as HTMLElement | null) ?? null;
+}
+
+function dampenPull(distance: number) {
+  const x = Math.max(0, distance);
+  return Math.min(PULL_MAX, (1 - Math.exp(-x / 78)) * PULL_MAX);
+}
+
+function PullSpinner({ spinning, progress }: { spinning: boolean; progress: number }) {
+  const rotation = spinning ? undefined : Math.min(1, progress) * 270;
+  return (
+    <span
+      className={`block h-[22px] w-[22px] rounded-full border-[2.5px] border-[#00E575]/20 border-t-[#00E575] ${
+        spinning ? "animate-spin" : ""
+      }`}
+      style={
+        spinning
+          ? undefined
+          : { transform: `rotate(${rotation}deg)` }
+      }
+      aria-hidden
+    />
+  );
 }
 
 function GroupCard({
@@ -87,7 +111,14 @@ function GroupCard({
   const isJoinable = group.filter === "joinable";
   const full = group.members.length >= group.capacity;
   const locked = !isJoinable && !isMember;
-  const actionLabel = isMember ? "입장하기" : isJoinable ? "참여하기" : null;
+  const actionLabel = isMember
+    ? "입장하기"
+    : isJoinable
+      ? full
+        ? "모집 마감"
+        : "참여하기"
+      : null;
+  const actionMuted = Boolean(actionLabel === "모집 마감");
   return (
     <Card onClick={() => onOpen(group)} className="overflow-hidden p-4">
       <div className="flex gap-3.5">
@@ -144,7 +175,13 @@ function GroupCard({
           showOwnerMark={false}
         />
         {actionLabel ? (
-          <span className="text-xs font-semibold text-[#00FF87]">{actionLabel}</span>
+          <span
+            className={`text-xs font-semibold ${
+              actionMuted ? "text-gray-500" : "text-[#00FF87]"
+            }`}
+          >
+            {actionLabel}
+          </span>
         ) : null}
       </div>
     </Card>
@@ -174,17 +211,115 @@ export function FindTab({
   refreshing?: boolean;
   onRefresh?: () => void | Promise<unknown>;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const startYRef = useRef<number | null>(null);
+  const startXRef = useRef(0);
+  const pullingRef = useRef(false);
   const pullYRef = useRef(0);
+  const refreshingRef = useRef(refreshing);
+  const onRefreshRef = useRef(onRefresh);
   const [pullY, setPullY] = useState(0);
+  const [settling, setSettling] = useState(false);
+
+  refreshingRef.current = refreshing;
+  onRefreshRef.current = onRefresh;
 
   useEffect(() => {
     pullYRef.current = pullY;
   }, [pullY]);
 
   useEffect(() => {
-    if (!refreshing) setPullY(0);
+    if (refreshing) return;
+    if (pullYRef.current <= 0) return;
+    setSettling(true);
+    setPullY(0);
   }, [refreshing]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || !onRefresh) return;
+    const scroller = findScrollParent(root);
+    if (!scroller) return;
+
+    const prevOverscroll = scroller.style.overscrollBehaviorY;
+    scroller.style.overscrollBehaviorY = "contain";
+
+    const setPull = (value: number) => {
+      pullYRef.current = value;
+      setPullY(value);
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (refreshingRef.current) return;
+      if (scroller.scrollTop > 0) {
+        startYRef.current = null;
+        pullingRef.current = false;
+        return;
+      }
+      startYRef.current = event.touches[0].clientY;
+      startXRef.current = event.touches[0].clientX;
+      pullingRef.current = false;
+      setSettling(false);
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (startYRef.current == null || refreshingRef.current) return;
+      if (scroller.scrollTop > 0 && !pullingRef.current) {
+        startYRef.current = null;
+        setPull(0);
+        return;
+      }
+
+      const touch = event.touches[0];
+      const dy = touch.clientY - startYRef.current;
+      const dx = touch.clientX - startXRef.current;
+
+      if (!pullingRef.current) {
+        if (dy < 8) return;
+        if (Math.abs(dx) > dy) {
+          startYRef.current = null;
+          return;
+        }
+        pullingRef.current = true;
+      }
+
+      if (dy <= 0) {
+        pullingRef.current = false;
+        setPull(0);
+        return;
+      }
+
+      event.preventDefault();
+      setPull(dampenPull(dy));
+    };
+
+    const onTouchEnd = () => {
+      if (startYRef.current == null) return;
+      startYRef.current = null;
+      pullingRef.current = false;
+      if (pullYRef.current >= PULL_THRESHOLD) {
+        setSettling(true);
+        setPull(PULL_REST);
+        void onRefreshRef.current?.();
+        return;
+      }
+      setSettling(true);
+      setPull(0);
+    };
+
+    scroller.addEventListener("touchstart", onTouchStart, { passive: true });
+    scroller.addEventListener("touchmove", onTouchMove, { passive: false });
+    scroller.addEventListener("touchend", onTouchEnd);
+    scroller.addEventListener("touchcancel", onTouchEnd);
+
+    return () => {
+      scroller.style.overscrollBehaviorY = prevOverscroll;
+      scroller.removeEventListener("touchstart", onTouchStart);
+      scroller.removeEventListener("touchmove", onTouchMove);
+      scroller.removeEventListener("touchend", onTouchEnd);
+      scroller.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, []);
 
   const mine = groups.filter((g) => isGroupMember(g, { userId: myUserId, nickname }));
   const filtered =
@@ -201,49 +336,30 @@ export function FindTab({
     { key: "mine", label: "내 모임", count: counts.mine },
   ];
 
-  const onTouchStart = (event: TouchEvent<HTMLDivElement>) => {
-    const scroller = findScrollParent(event.currentTarget);
-    if (scroller && scroller.scrollTop > 0) {
-      startYRef.current = null;
-      return;
-    }
-    startYRef.current = event.touches[0].clientY;
-  };
-
-  const onTouchMove = (event: TouchEvent<HTMLDivElement>) => {
-    if (startYRef.current == null || refreshing) return;
-    const scroller = findScrollParent(event.currentTarget);
-    if (scroller && scroller.scrollTop > 0) {
-      startYRef.current = null;
-      setPullY(0);
-      return;
-    }
-    const dy = event.touches[0].clientY - startYRef.current;
-    setPullY(dy > 0 ? Math.min(88, dy * 0.42) : 0);
-  };
-
-  const onTouchEnd = () => {
-    if (startYRef.current == null) return;
-    startYRef.current = null;
-    if (pullYRef.current >= PULL_THRESHOLD) {
-      void onRefresh?.();
-      return;
-    }
-    setPullY(0);
-  };
-
-  const pullHeight = refreshing ? Math.max(pullY, 44) : pullY;
-  const showPullSpinner = refreshing || pullY >= PULL_THRESHOLD;
+  const pullHeight = refreshing ? Math.max(pullY, PULL_REST) : pullY;
+  const pullProgress = pullHeight / PULL_THRESHOLD;
+  const spinning = refreshing || pullHeight >= PULL_THRESHOLD;
 
   return (
-    <div
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-      onTouchCancel={onTouchEnd}
-    >
-      <div className="sticky top-0 z-20 flex items-center gap-2 bg-[#121316]/95 px-4 py-3 backdrop-blur">
-        <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div ref={rootRef}>
+      <div
+        className={`flex items-center justify-center overflow-hidden ${
+          settling || refreshing ? "transition-[height] duration-300 ease-out" : ""
+        }`}
+        style={{ height: pullHeight }}
+        aria-hidden={pullHeight <= 0}
+        aria-live="polite"
+        onTransitionEnd={() => {
+          if (!refreshing && pullHeight <= 0) setSettling(false);
+        }}
+      >
+        {pullHeight > 0 ? (
+          <PullSpinner spinning={spinning} progress={pullProgress} />
+        ) : null}
+      </div>
+
+      <div className="sticky top-0 z-20 bg-[#121316]/95 px-4 py-3 backdrop-blur">
+        <div className="flex gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {chips.map((c) => {
             const on = filter === c.key;
             return (
@@ -269,31 +385,6 @@ export function FindTab({
             );
           })}
         </div>
-        {onRefresh ? (
-          <button
-            type="button"
-            aria-label="모임 목록 새로고침"
-            onClick={() => void onRefresh()}
-            disabled={refreshing}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-700 text-gray-400 transition-colors hover:border-gray-500 hover:text-white disabled:opacity-60"
-          >
-            <RefreshCw size={15} className={refreshing ? "animate-spin" : undefined} />
-          </button>
-        ) : null}
-      </div>
-
-      <div
-        className="flex items-center justify-center overflow-hidden text-gray-500 transition-[height] duration-150"
-        style={{ height: pullHeight }}
-        aria-hidden={pullHeight <= 0}
-      >
-        {pullHeight > 0 ? (
-          <Loader2
-            size={18}
-            className={showPullSpinner ? "animate-spin" : undefined}
-            style={{ opacity: Math.min(1, pullHeight / 36) }}
-          />
-        ) : null}
       </div>
 
       <div className="space-y-3 px-4 pb-28 pt-1">

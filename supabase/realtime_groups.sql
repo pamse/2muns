@@ -4,6 +4,7 @@
 
 alter table if exists public.groups replica identity full;
 alter table if exists public.group_members replica identity full;
+alter table if exists public.notices replica identity full;
 
 do $$
 begin
@@ -31,5 +32,13 @@ begin
       and tablename = 'users'
   ) then
     execute 'alter publication supabase_realtime add table public.users';
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'notices'
+  ) then
+    execute 'alter publication supabase_realtime add table public.notices';
   end if;
 end $$;
