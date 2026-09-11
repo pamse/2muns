@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #121316;
+  --foreground: #ffffff;
 }
 
 @theme inline {
@@ -12,15 +12,59 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+@keyframes splash-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.splash-logo {
+  animation: splash-scale-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.splash-subtitle {
+  animation: splash-scale-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+}
+
+html[data-splash="seen"] [data-splash-screen] {
+  display: none;
+}
+
+@keyframes munsy-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+
+.munsy-float {
+  animation: munsy-float 3.2s ease-in-out infinite;
+}
+
+.munsy-crop {
+  mask-image: linear-gradient(to bottom, #000 74%, transparent 94%);
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
