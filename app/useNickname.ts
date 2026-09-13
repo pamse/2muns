@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { clearAllJoinedGroupCaches } from "@/lib/groups";
 import { dispatchProfileUpdated, syncProfileToSupabase } from "@/lib/profile";
 import { MY_PROFILE_IMAGE_KEY } from "./useMyProfileImage";
 
@@ -82,12 +83,56 @@ function getOrCreateUserId() {
   return id;
 }
 
+async function resolveCanonicalUserId(nickname?: string | null) {
+  let id = readMyUserId();
+  const trimmed = nickname?.trim();
+
+  if (id) {
+    const { data: profileById } = await supabase
+      .from("users")
+      .select("id")
+      .eq("id", id)
+      .maybeSingle();
+    if (profileById?.id) {
+      try {
+        window.localStorage.setItem(USER_ID_KEY, id);
+      } catch {
+        // localStorage 접근 불가 시 무시
+      }
+      return id;
+    }
+  }
+
+  if (trimmed) {
+    const { data: profiles } = await supabase
+      .from("users")
+      .select("id")
+      .ilike("nickname", trimmed)
+      .order("nickname_updated_at", { ascending: false, nullsFirst: false })
+      .limit(1);
+    const canonical = profiles?.[0]?.id;
+    if (canonical) {
+      id = canonical;
+    }
+  }
+
+  if (!id) {
+    id = getOrCreateUserId();
+  }
+  try {
+    window.localStorage.setItem(USER_ID_KEY, id);
+  } catch {
+    // localStorage 접근 불가 시 무시
+  }
+  return id;
+}
+
 async function syncUserToSupabase(payload: {
   nickname: string;
   nickname_updated_at: string;
   selected_categories?: string[];
 }) {
-  const id = getOrCreateUserId();
+  const id = await resolveCanonicalUserId(payload.nickname);
   const { error } = await supabase.from("users").upsert(
     {
       id,
@@ -125,11 +170,14 @@ const SESSION_KEYS = [
 function isUserCacheKey(key: string) {
   const lower = key.toLowerCase();
   return (
+    key.startsWith("muns:") ||
     key.startsWith("2muns_") ||
     key.startsWith("my_") ||
     lower.includes("nickname") ||
     lower.includes("profile") ||
     lower.includes("avatar") ||
+    lower.includes("joined-groups") ||
+    lower.includes("dismissed-notices") ||
     lower === "user" ||
     lower.startsWith("user") ||
     lower.includes("session")
@@ -155,6 +203,7 @@ function removeUserCacheKeys() {
 export async function logoutLocalSession() {
   try {
     removeUserCacheKeys();
+    clearAllJoinedGroupCaches();
   } catch {
     // localStorage 접근 불가 시에도 인증 해제는 시도
   }
@@ -173,19 +222,38 @@ export function useNickname() {
   const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(NICKNAME_KEY);
-      if (stored) {
-        setNickname(stored);
-        setHasNickname(true);
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const stored = window.localStorage.getItem(NICKNAME_KEY)?.trim() || "";
+        if (stored) {
+          setNickname(stored);
+          setHasNickname(true);
+        }
+        setChangeLog(readLog());
+        if (stored) {
+          const id = await resolveCanonicalUserId(stored);
+          if (!cancelled) {
+            setUserId(id);
+          }
+        } else if (!cancelled) {
+          setUserId(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setUserId(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setReady(true);
+        }
       }
-      setChangeLog(readLog());
-      setUserId(readMyUserId());
-    } catch {
-      // localStorage 접근 불가 시 기본값 유지
-    } finally {
-      setReady(true);
-    }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const remaining = remainingNicknameChanges(changeLog);
@@ -203,15 +271,14 @@ export function useNickname() {
       persistLocal(trimmed, updatedAt, changeLog);
       setNickname(trimmed);
       setHasNickname(true);
-      setUserId(getOrCreateUserId());
-
       try {
         await syncUserToSupabase({
           nickname: trimmed,
           nickname_updated_at: updatedAt,
           selected_categories: selectedCategories,
         });
-        const id = getOrCreateUserId();
+        const id = await resolveCanonicalUserId(trimmed);
+        setUserId(id);
         await syncProfileToSupabase({ userId: id, nickname: trimmed });
         dispatchProfileUpdated({ userId: id, nickname: trimmed });
       } catch (error) {
@@ -247,14 +314,13 @@ export function useNickname() {
       setNickname(trimmed);
       setChangeLog(nextLog);
       setHasNickname(true);
-      setUserId(getOrCreateUserId());
-
       try {
         await syncUserToSupabase({
           nickname: trimmed,
           nickname_updated_at: updatedAt,
         });
-        const id = getOrCreateUserId();
+        const id = await resolveCanonicalUserId(trimmed);
+        setUserId(id);
         await syncProfileToSupabase({ userId: id, nickname: trimmed });
         dispatchProfileUpdated({ userId: id, nickname: trimmed });
       } catch (error) {

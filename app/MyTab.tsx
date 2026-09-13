@@ -21,7 +21,7 @@ import {
   MAX_JOINED_GROUPS,
   RANKING,
   hasRaceStarted,
-  isGroupMember,
+  listJoinedActiveGroups,
   type Group,
 } from "./data";
 import { AttendanceStrip, ATTENDANCE_LIVES } from "./AttendanceStrip";
@@ -102,6 +102,89 @@ function ProfilePhotoButton({
         onChange={handleChange}
       />
     </button>
+  );
+}
+
+function QuitChallengeModal({
+  open,
+  quitting = false,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  quitting?: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const [host, setHost] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setHost(document.getElementById("muns-frame") ?? document.body);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !quitting) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, quitting, onClose]);
+
+  if (!open || !host) return null;
+
+  return createPortal(
+    <div className="absolute inset-0 z-[80] flex items-center justify-center px-6">
+      <button
+        type="button"
+        aria-label="닫기"
+        onClick={onClose}
+        disabled={quitting}
+        className="absolute inset-0 bg-black/65 backdrop-blur-sm disabled:cursor-not-allowed"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quit-challenge-title"
+        className="relative z-10 w-full max-w-[340px] overflow-hidden rounded-2xl border border-white/10 bg-[#1B1D22] p-5 shadow-[0_20px_48px_rgba(0,0,0,0.5)]"
+        style={{ animation: "entryDeniedIn 0.22s ease-out" }}
+      >
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-red-500/12">
+          <AlertTriangle size={22} className="text-red-400" />
+        </div>
+        <h2
+          id="quit-challenge-title"
+          className="mt-4 text-center text-lg font-bold text-white"
+        >
+          챌린지를 포기하시겠습니까?
+        </h2>
+        <p className="mt-2 text-center text-[13px] leading-relaxed text-gray-400">
+          퇴장 시 현재까지의 진행 기록이 초기화되며 모임에서 제외됩니다.
+        </p>
+        <div className="mt-5 flex gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={quitting}
+            className="flex-1 rounded-xl border border-zinc-700 bg-zinc-900 py-3.5 text-sm font-semibold text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-60"
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={quitting}
+            className="flex-1 rounded-xl bg-red-500 py-3.5 text-sm font-bold text-white transition-transform active:scale-[0.98] disabled:opacity-60"
+          >
+            {quitting ? "처리 중..." : "포기하기(퇴장)"}
+          </button>
+        </div>
+      </div>
+      <style>{`@keyframes entryDeniedIn{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+    </div>,
+    host,
   );
 }
 
@@ -213,6 +296,7 @@ export function MyTab({
   onQuitGroup,
   onLogout,
   groups,
+  joinedGroupIds,
   myUserId,
   nickname,
   remainingNicknameChanges,
@@ -224,9 +308,10 @@ export function MyTab({
 }: {
   onGoFind: () => void;
   onOpenRoom: (group: Group) => void;
-  onQuitGroup: (groupId: string) => void;
+  onQuitGroup: (groupId: string) => void | Promise<void>;
   onLogout: () => void;
   groups: Group[];
+  joinedGroupIds?: string[];
   myUserId?: string | null;
   nickname: string;
   remainingNicknameChanges: number;
@@ -236,12 +321,22 @@ export function MyTab({
   onSelectProfileImage: (file: File) => void | Promise<void>;
   profileImageUploading?: boolean;
 }) {
+  const joinedGroups = useMemo(
+    () =>
+      listJoinedActiveGroups(
+        groups,
+        { userId: myUserId, nickname },
+        joinedGroupIds,
+      ),
+    [groups, joinedGroupIds, myUserId, nickname],
+  );
   const myGroups = useMemo(
-    () => groups.filter((group) => isGroupMember(group, { userId: myUserId, nickname })),
-    [groups, myUserId, nickname],
+    () => joinedGroups.slice(0, MAX_JOINED_GROUPS),
+    [joinedGroups],
   );
   const [selectedId, setSelectedId] = useState(myGroups[0]?.id ?? "");
   const [showQuit, setShowQuit] = useState(false);
+  const [quitting, setQuitting] = useState(false);
   const [dismissedShortsKey, setDismissedShortsKey] = useState<string | null>(null);
   const [showShortsModal, setShowShortsModal] = useState(false);
   const [showNickEdit, setShowNickEdit] = useState(false);
@@ -314,10 +409,17 @@ export function MyTab({
   );
   const canAdd = myGroups.length < MAX_JOINED_GROUPS;
 
-  function handleQuit() {
-    if (!selected) return;
-    onQuitGroup(selected.id);
-    setShowQuit(false);
+  async function handleQuit() {
+    if (!selected || quitting) return;
+    setQuitting(true);
+    try {
+      await onQuitGroup(selected.id);
+      setShowQuit(false);
+    } catch {
+      // 부모에서 토스트/재동기화 처리
+    } finally {
+      setQuitting(false);
+    }
   }
 
   function openNicknameEditor() {
@@ -529,6 +631,13 @@ export function MyTab({
           >
             모임방 대기실 바로가기
           </button>
+          <button
+            type="button"
+            onClick={() => setShowQuit(true)}
+            className="mt-4 block w-full text-center text-xs text-slate-500 hover:text-slate-400"
+          >
+            챌린지 포기하기
+          </button>
         </Card>
       ) : (
         <Card className="p-8 text-center">
@@ -657,30 +766,12 @@ export function MyTab({
         </p>
       </BottomSheet>
 
-      <BottomSheet
+      <QuitChallengeModal
         open={showQuit}
-        onClose={() => setShowQuit(false)}
-        title="정말 챌린지를 중단하시겠습니까?"
-      >
-        <p className="text-[13px] leading-relaxed text-gray-400">
-          중도 퇴장 시 해당 모임의 66일 누적 기록과 달성 포인트가 소멸되며, 다시 입장할 수
-          없습니다.
-        </p>
-        <div className="mt-5 space-y-2.5">
-          <button
-            onClick={() => setShowQuit(false)}
-            className="w-full rounded-xl bg-[#00FF87] py-3.5 text-sm font-bold text-black active:scale-[0.98]"
-          >
-            계속 도전하기
-          </button>
-          <button
-            onClick={handleQuit}
-            className="w-full rounded-xl bg-red-500/90 py-3.5 text-sm font-bold text-white active:scale-[0.98]"
-          >
-            포기하기
-          </button>
-        </div>
-      </BottomSheet>
+        quitting={quitting}
+        onClose={() => !quitting && setShowQuit(false)}
+        onConfirm={() => void handleQuit()}
+      />
     </div>
   );
 }

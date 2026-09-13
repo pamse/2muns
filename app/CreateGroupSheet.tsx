@@ -5,7 +5,8 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { ChevronDown, Info, Lock, Timer, Users, Zap } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { ME_AVATAR, type Group } from "./data";
+import { MAX_JOINED_GROUPS, ME_AVATAR, type Group } from "./data";
+import { countUserMemberships } from "@/lib/groups";
 import { getCategoryThumbnail } from "@/lib/categories";
 import { BottomSheet } from "./ui";
 
@@ -393,6 +394,8 @@ export function CreateGroupSheet({
   open,
   onClose,
   onCreate,
+  onJoinLimit,
+  joinedCount = 0,
   onCreatedNotice,
   onNoticesRefresh,
   ownerId = "me",
@@ -402,6 +405,8 @@ export function CreateGroupSheet({
   open: boolean;
   onClose: () => void;
   onCreate: (g: Group) => void;
+  onJoinLimit?: () => void;
+  joinedCount?: number;
   onCreatedNotice?: (notice: Notice) => void;
   onNoticesRefresh?: () => void;
   ownerId?: string;
@@ -421,10 +426,31 @@ export function CreateGroupSheet({
 
   async function handleSubmit() {
     if (!canSubmit) return;
+    if (joinedCount >= MAX_JOINED_GROUPS) {
+      onClose();
+      onJoinLimit?.();
+      return;
+    }
     setSaving(true);
     const id = crypto.randomUUID();
     const title = name.trim();
     const description = intro.trim();
+
+    if (ownerId && ownerId !== "me") {
+      try {
+        const memberships = await countUserMemberships(ownerId);
+        if (memberships >= MAX_JOINED_GROUPS) {
+          setSaving(false);
+          onClose();
+          onJoinLimit?.();
+          return;
+        }
+      } catch (error) {
+        console.error("membership count failed", error);
+        setSaving(false);
+        return;
+      }
+    }
 
     let groupInserted = false;
     try {
@@ -518,9 +544,11 @@ export function CreateGroupSheet({
       total: 66,
       capacity: 6,
       ownerId,
+      createdBy: ownerId,
       members: [{ id: ownerId, name: ownerName, color: GRADIENTS[0], avatar: ownerAvatar }],
       filter: "joinable",
       raceStatus: "recruiting",
+      dbStatus: "recruiting",
       verifyAnytime,
       verifyStartHour: verifyStart,
       verifyEndHour: verifyEnd,

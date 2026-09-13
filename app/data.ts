@@ -28,6 +28,8 @@ export type Group = {
   filter: GroupStatus; // 진행 중 / 참여 가능
   /** 개설자(방장) 유저 id */
   ownerId?: string;
+  /** DB `groups.created_by`가 있으면 사용. 없으면 ownerId와 동일 */
+  createdBy?: string;
   /** true면 24시간 자유 인증 */
   verifyAnytime?: boolean;
   /** 인증 가능 시작 시각 (0~24시) */
@@ -40,6 +42,8 @@ export type Group = {
   raceStatus?: "recruiting" | "started";
   /** 레이스 공식 시작 시각 (timestamptz). 캘린더 Day 1 = 이 날짜의 KST 달력일 */
   startedAt?: string | null;
+  /** DB `groups.status` 원본. 종료/완료 모임 제외에 사용 */
+  dbStatus?: string | null;
 };
 
 /** 모임 상세(룸)의 숏폼 인증 영상 피드 아이템 */
@@ -112,17 +116,30 @@ const m = (id: string, name: string, color: string, avatar: string): Member => (
 export function isMyGroup(group: Group, myUserId?: string | null) {
   const ids = new Set<string>();
   if (myUserId) {
-    ids.add(myUserId);
+    ids.add(String(myUserId));
+    ids.add(normalizeGroupId(myUserId));
     ids.add("me");
   }
-  if (group.ownerId && ids.has(group.ownerId)) {
+  const ownerId = group.ownerId ? normalizeGroupId(group.ownerId) : "";
+  if (ownerId && ids.has(ownerId)) {
     return true;
   }
-  return group.members.some((member) => ids.has(member.id));
+  const createdBy = group.createdBy ? normalizeGroupId(group.createdBy) : "";
+  if (createdBy && ids.has(createdBy)) {
+    return true;
+  }
+  return group.members.some((member) => {
+    const memberId = normalizeGroupId(member.id);
+    return ids.has(memberId) || ids.has(String(member.id));
+  });
 }
 
 function normalizeMemberName(name: string) {
   return name.replace(/\(.*\)/, "").trim().toLowerCase();
+}
+
+export function normalizeGroupId(id: string | null | undefined) {
+  return String(id ?? "").trim().toLowerCase();
 }
 
 export function isGroupMember(
@@ -140,17 +157,24 @@ export function isGroupMember(
   return group.members.some((member) => normalizeMemberName(member.name) === needle);
 }
 
-export function getGroupOwnerId(group: Group) {
-  return group.ownerId || group.members[0]?.id;
+const ENDED_GROUP_STATUSES = new Set([
+  "ended",
+  "completed",
+  "finished",
+  "deleted",
+  "archived",
+  "cancelled",
+  "canceled",
+  "expired",
+  "closed",
+]);
+
+export function isEndedGroupStatus(status?: string | null) {
+  return ENDED_GROUP_STATUSES.has((status || "").trim().toLowerCase());
 }
 
-export function isGroupOwner(group: Group, userId?: string | null) {
-  const ids = new Set<string>(["me"]);
-  if (userId) {
-    ids.add(userId);
-  }
-  const ownerId = getGroupOwnerId(group);
-  return Boolean(ownerId && ids.has(ownerId));
+export function isEndedGroup(group: Group) {
+  return isEndedGroupStatus(group.dbStatus);
 }
 
 export function hasRaceStarted(group: Group) {
@@ -161,6 +185,93 @@ export function hasRaceStarted(group: Group) {
     return false;
   }
   return group.filter === "ongoing";
+}
+
+/** 진행 중(레이스 시작) + 대기/모집 중만 활성. 종료·완료는 제외 */
+export function isActiveChallengeGroup(group: Group) {
+  return !isEndedGroup(group);
+}
+
+export function resolveUserJoinedGroupIds(
+  groups: Group[],
+  me: { userId?: string | null; nickname?: string | null } = {},
+  serverIds: Iterable<string> = [],
+) {
+  const ids = new Set<string>();
+  for (const id of serverIds) {
+    const normalized = normalizeGroupId(id);
+    if (normalized) ids.add(normalized);
+  }
+  for (const group of groups) {
+    if (!isActiveChallengeGroup(group)) continue;
+    if (isGroupMember(group, me)) {
+      ids.add(normalizeGroupId(group.id));
+    }
+  }
+  return [...ids];
+}
+
+/** 내가 참여 중인 모임 중 레이스가 시작된(진행 중) 모임 */
+export function listJoinedOngoingGroups(
+  groups: Group[],
+  me: { userId?: string | null; nickname?: string | null } = {},
+  extraGroupIds: Iterable<string> = [],
+) {
+  return listJoinedActiveGroups(groups, me, extraGroupIds).filter((group) =>
+    hasRaceStarted(group),
+  );
+}
+
+export function listJoinedActiveGroups(
+  groups: Group[],
+  me: { userId?: string | null; nickname?: string | null } = {},
+  extraGroupIds: Iterable<string> = [],
+) {
+  const extra = new Set(
+    resolveUserJoinedGroupIds(groups, me, extraGroupIds).map(normalizeGroupId),
+  );
+  const joined = groups.filter((group) => {
+    if (!isActiveChallengeGroup(group)) return false;
+    return extra.has(normalizeGroupId(group.id));
+  });
+  const seen = new Set<string>();
+  const unique: Group[] = [];
+  for (const group of joined) {
+    const key = normalizeGroupId(group.id);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(group);
+  }
+  const ongoing = unique.filter((group) => hasRaceStarted(group));
+  const waiting = unique.filter((group) => !hasRaceStarted(group));
+  return [...ongoing, ...waiting];
+}
+
+export function countJoinedGroups(
+  groups: Group[],
+  me: { userId?: string | null; nickname?: string | null } = {},
+) {
+  return listJoinedActiveGroups(groups, me).length;
+}
+
+export function hasReachedJoinLimit(
+  groups: Group[],
+  me: { userId?: string | null; nickname?: string | null } = {},
+) {
+  return countJoinedGroups(groups, me) >= MAX_JOINED_GROUPS;
+}
+
+export function getGroupOwnerId(group: Group) {
+  return group.ownerId || group.createdBy || group.members[0]?.id;
+}
+
+export function isGroupOwner(group: Group, userId?: string | null) {
+  const ids = new Set<string>(["me"]);
+  if (userId) {
+    ids.add(userId);
+  }
+  const ownerId = getGroupOwnerId(group);
+  return Boolean(ownerId && ids.has(ownerId));
 }
 
 /** 로컬 데모 데이터. 메인 피드는 Supabase `groups`를 사용합니다. */
@@ -292,6 +403,7 @@ export const RANKING: RankUser[] = [
 
 /** 마이페이지에서 동시에 참여할 수 있는 최대 모임 수 */
 export const MAX_JOINED_GROUPS = 3;
+export const JOIN_LIMIT_MESSAGE = "모임참여는 3개까지 가능합니다";
 
 /** 습관 설문조사 카테고리 */
 export const HABIT_CATEGORIES = [

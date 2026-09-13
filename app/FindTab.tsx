@@ -1,10 +1,16 @@
 // 2müns — '모임찾기' 탭 (메인 홈): 필터 + 모임 카드 리스트
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight, Flame, Loader2, Lock, Plus, Users } from "lucide-react";
-import { isGroupMember, type Group, type GroupFilter } from "./data";
+import {
+  isGroupMember,
+  listJoinedActiveGroups,
+  listJoinedOngoingGroups,
+  type Group,
+  type GroupFilter,
+} from "./data";
 import { groupThumbnailSrc } from "@/lib/categories";
 import { Card, GroupThumb, Pill, ProgressBar, StackedAvatars } from "./ui";
 
@@ -58,6 +64,61 @@ export function EntryDeniedModal({
           확인
         </button>
         <style>{`@keyframes entryDeniedIn{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+      </div>
+    </div>,
+    host,
+  );
+}
+
+export function JoinLimitModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [host, setHost] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setHost(document.getElementById("muns-frame") ?? document.body);
+  }, []);
+
+  if (!open || !host) return null;
+
+  return createPortal(
+    <div className="absolute inset-0 z-[80] flex items-center justify-center px-6">
+      <button
+        type="button"
+        aria-label="닫기"
+        onClick={onClose}
+        className="absolute inset-0 bg-black/65 backdrop-blur-sm"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="join-limit-title"
+        className="relative z-10 w-full max-w-[340px] overflow-hidden rounded-2xl border border-white/10 bg-[#1B1D22] p-5 shadow-[0_20px_48px_rgba(0,0,0,0.5)]"
+        style={{ animation: "entryDeniedIn 0.22s ease-out" }}
+      >
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-400/12">
+          <Users size={22} className="text-amber-300" />
+        </div>
+        <h2
+          id="join-limit-title"
+          className="mt-4 text-center text-lg font-bold text-white"
+        >
+          참여 제한
+        </h2>
+        <p className="mt-2 text-center text-[13px] leading-relaxed text-gray-400">
+          모임참여는 3개까지 가능합니다
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-5 w-full rounded-xl bg-[#00FF87] py-3.5 text-sm font-bold text-black transition-transform active:scale-[0.98]"
+        >
+          확인
+        </button>
       </div>
     </div>,
     host,
@@ -191,22 +252,26 @@ function GroupCard({
 
 export function FindTab({
   groups,
+  joinedGroupIds = [],
   filter,
   onFilterChange,
   onOpenRoom,
   myUserId,
   nickname,
+  isLoggedIn = false,
   loading = false,
   error = null,
   refreshing = false,
   onRefresh,
 }: {
   groups: Group[];
+  joinedGroupIds?: string[];
   filter: GroupFilter;
   onFilterChange: (f: GroupFilter) => void;
   onOpenRoom: (g: Group) => void;
   myUserId?: string | null;
   nickname?: string;
+  isLoggedIn?: boolean;
   loading?: boolean;
   error?: string | null;
   refreshing?: boolean;
@@ -322,12 +387,35 @@ export function FindTab({
     };
   }, []);
 
-  const mine = groups.filter((g) => isGroupMember(g, { userId: myUserId, nickname }));
+  const mine = useMemo(() => {
+    if (!isLoggedIn || !myUserId) return [];
+    return listJoinedActiveGroups(
+      groups,
+      { userId: myUserId, nickname },
+      joinedGroupIds,
+    );
+  }, [groups, joinedGroupIds, isLoggedIn, myUserId, nickname]);
+  const myOngoing = useMemo(() => {
+    if (!isLoggedIn || !myUserId) return [];
+    return listJoinedOngoingGroups(
+      groups,
+      { userId: myUserId, nickname },
+      joinedGroupIds,
+    );
+  }, [groups, joinedGroupIds, isLoggedIn, myUserId, nickname]);
+  const joinable = useMemo(
+    () => groups.filter((g) => g.filter === "joinable"),
+    [groups],
+  );
   const filtered =
-    filter === "mine" ? mine : groups.filter((g) => g.filter === filter);
+    filter === "mine"
+      ? mine
+      : filter === "ongoing"
+        ? myOngoing
+        : joinable;
   const counts = {
-    ongoing: groups.filter((g) => g.filter === "ongoing").length,
-    joinable: groups.filter((g) => g.filter === "joinable").length,
+    ongoing: myOngoing.length,
+    joinable: joinable.length,
     mine: mine.length,
   };
 
@@ -408,21 +496,46 @@ export function FindTab({
           <GroupCard
             key={g.id}
             group={g}
-            isMember={isGroupMember(g, { userId: myUserId, nickname })}
+            isMember={
+              isLoggedIn &&
+              (mine.some((item) => item.id === g.id) ||
+                isGroupMember(g, { userId: myUserId, nickname }))
+            }
             onOpen={onOpenRoom}
           />
         ))}
         {!loading && filtered.length === 0 && filter === "mine" && (
           <div className="rounded-2xl border border-dashed border-gray-800 bg-[#1B1D22] px-5 py-16 text-center">
-            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
-              {"아직 참여 중인 모임이 없습니다.\n새로운 습관 모임에 참여하거나 직접 모임을 만들어보세요!"}
-            </p>
-            <p className="mt-4 inline-flex items-center gap-1 text-[12px] text-gray-500">
-              <Plus size={12} /> 하단 + 버튼으로 모임을 만들 수 있어요
-            </p>
+            {!isLoggedIn ? (
+              <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
+                {"로그인하면 참여 중인 모임을 확인할 수 있어요.\n마이페이지에서 닉네임을 설정해 주세요."}
+              </p>
+            ) : (
+              <>
+                <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
+                  {"아직 참여 중인 모임이 없습니다.\n새로운 습관 모임에 참여하거나 직접 모임을 만들어보세요!"}
+                </p>
+                <p className="mt-4 inline-flex items-center gap-1 text-[12px] text-gray-500">
+                  <Plus size={12} /> 하단 + 버튼으로 모임을 만들 수 있어요
+                </p>
+              </>
+            )}
           </div>
         )}
-        {!loading && filtered.length === 0 && filter !== "mine" && (
+        {!loading && filtered.length === 0 && filter === "ongoing" && (
+          <div className="rounded-2xl border border-dashed border-gray-800 bg-[#1B1D22] px-5 py-16 text-center">
+            {!isLoggedIn ? (
+              <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
+                {"로그인하면 진행 중인 내 모임을 확인할 수 있어요.\n마이페이지에서 닉네임을 설정해 주세요."}
+              </p>
+            ) : (
+              <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
+                {"진행 중인 모임이 없습니다.\n참여 가능한 모임에서 새 챌린지에 합류해 보세요!"}
+              </p>
+            )}
+          </div>
+        )}
+        {!loading && filtered.length === 0 && filter === "joinable" && (
           <div className="py-20 text-center text-sm text-gray-500">
             아직 모임이 없어요. <br /> 우측 하단 + 버튼으로 첫 모임을 만들어보세요!
           </div>

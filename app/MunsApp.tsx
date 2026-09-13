@@ -5,13 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { addGroupMember, applyUserProfileToGroups, fetchAppGroups, overlayMyProfile, removeGroupMember } from "@/lib/groups";
+import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, removeGroupMember } from "@/lib/groups";
 import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import {
   getGroupOwnerId,
   isGroupMember,
   isGroupOwner,
+  JOIN_LIMIT_MESSAGE,
+  listJoinedActiveGroups,
   MAX_JOINED_GROUPS,
+  normalizeGroupId,
   ME_AVATAR,
   type Group,
   type GroupFilter,
@@ -19,7 +22,7 @@ import {
 } from "./data";
 import { BottomNav } from "./BottomNav";
 import { CreateGroupSheet } from "./CreateGroupSheet";
-import { FindTab, EntryDeniedModal } from "./FindTab";
+import { FindTab, EntryDeniedModal, JoinLimitModal } from "./FindTab";
 import { InfoTab } from "./InfoTab";
 import { LoginGateModal } from "./LoginGateModal";
 import { MyTab } from "./MyTab";
@@ -123,6 +126,7 @@ export default function MunsApp() {
   const [groupsLoading, setGroupsLoading] = useState(true);
   const [groupsError, setGroupsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<GroupFilter>("joinable");
+  const [joinedGroupIds, setJoinedGroupIds] = useState<string[]>([]);
 
   // 오버레이/모달 상태
   const [room, setRoom] = useState<Group | null>(null);
@@ -133,6 +137,7 @@ export default function MunsApp() {
   const [welcomeNickname, setWelcomeNickname] = useState("");
   const [showLoginGate, setShowLoginGate] = useState(false);
   const [showEntryDenied, setShowEntryDenied] = useState(false);
+  const [showJoinLimit, setShowJoinLimit] = useState(false);
   const [autoOpenVerify, setAutoOpenVerify] = useState(false);
   const pendingIntentRef = useRef<AuthIntent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -154,6 +159,19 @@ export default function MunsApp() {
   const refreshInFlightRef = useRef<Promise<Group[] | null> | null>(null);
   const pendingRefreshRef = useRef(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionRef = useRef({
+    userId: userId as string | null,
+    nickname,
+    avatar: myProfileImage,
+    loggedIn: false,
+  });
+  const prevSessionKeyRef = useRef<string>("");
+  sessionRef.current = {
+    userId,
+    nickname,
+    avatar: myProfileImage,
+    loggedIn: ready && hasNickname,
+  };
 
   const refreshGroups = useCallback(async (options?: { showSpinner?: boolean }) => {
     if (options?.showSpinner) setGroupsRefreshing(true);
@@ -167,7 +185,18 @@ export default function MunsApp() {
         let next: Group[] | null = null;
         do {
           pendingRefreshRef.current = false;
-          next = await fetchAppGroups();
+          const session = sessionRef.current;
+          if (session.loggedIn && session.userId && session.nickname.trim()) {
+            const hydrated = await hydrateUserGroups(session.userId, {
+              nickname: session.nickname,
+              avatar: session.avatar,
+            });
+            next = hydrated.groups;
+            setJoinedGroupIds(hydrated.joinedIds);
+          } else {
+            next = await fetchAppGroups();
+            setJoinedGroupIds([]);
+          }
           setGroups(next);
           setGroupsError(null);
           setRoom((current) => {
@@ -202,6 +231,49 @@ export default function MunsApp() {
 
   useEffect(() => {
     void refreshGroups();
+  }, [refreshGroups, userId, nickname, ready, hasNickname]);
+
+  useEffect(() => {
+    if (!ready || (hasNickname && userId)) return;
+    setJoinedGroupIds((prev) => (prev.length > 0 ? [] : prev));
+  }, [userId, hasNickname, ready]);
+
+  useEffect(() => {
+    if (!ready || !hasNickname || !userId) return;
+    if (joinedGroupIds.length === 0) return;
+    persistJoinedIds(userId, joinedGroupIds);
+  }, [userId, hasNickname, joinedGroupIds, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const sessionKey = `${userId ?? ""}:${hasNickname ? nickname : ""}`;
+    const prevKey = prevSessionKeyRef.current;
+    prevSessionKeyRef.current = sessionKey;
+    if (!prevKey || prevKey === sessionKey) return;
+
+    setJoinedGroupIds([]);
+    setGroups([]);
+    setGroupsLoading(true);
+    setRoom(null);
+    setFilter((current) =>
+      current === "mine" || current === "ongoing" ? "joinable" : current,
+    );
+    void refreshGroups();
+  }, [ready, userId, nickname, hasNickname, refreshGroups]);
+
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) return;
+      setJoinedGroupIds([]);
+      setRoom(null);
+      setFilter((current) => (current === "mine" ? "joinable" : current));
+      void refreshGroups();
+    });
+    return () => {
+      subscription.unsubscribe();
+    };
   }, [refreshGroups]);
 
   useEffect(() => {
@@ -317,6 +389,10 @@ export default function MunsApp() {
     () => overlayMyProfile(groups, { userId, nickname, avatar: myProfileImage }),
     [groups, userId, nickname, myProfileImage],
   );
+  const myActiveGroups = useMemo(() => {
+    if (!isLoggedIn() || !userId) return [];
+    return listJoinedActiveGroups(visibleGroups, { userId, nickname }, joinedGroupIds);
+  }, [visibleGroups, userId, nickname, joinedGroupIds, ready, hasNickname]);
   const visibleRoom = useMemo(() => {
     if (!room) return null;
     return overlayMyProfile([room], { userId, nickname, avatar: myProfileImage })[0] ?? room;
@@ -341,21 +417,56 @@ export default function MunsApp() {
   }
 
   async function handleLogout() {
-    clearImage();
-    await clearSession();
+    const prevUserId = userId;
+    setJoinedGroupIds([]);
     setRoom(null);
+    setFilter("joinable");
     setShowCreate(false);
     setShowNotices(false);
     setShowOnboarding(false);
     setShowLoginGate(false);
+    setShowJoinLimit(false);
+    setShowEntryDenied(false);
+    clearPendingIntent();
+    if (prevUserId) {
+      clearPersistedJoinedIds(prevUserId);
+    }
+    clearImage();
+    await clearSession();
     setTab("find");
     window.location.href = "/";
   }
 
   function handleCreate(g: Group) {
     setGroups((prev) => [g, ...prev.filter((item) => item.id !== g.id)]);
+    setJoinedGroupIds((prev) => [
+      g.id,
+      ...prev.filter((id) => normalizeGroupId(id) !== normalizeGroupId(g.id)),
+    ]);
     setFilter("mine");
     void refreshGroups();
+  }
+
+  function tryOpenCreate() {
+    if (!requireAuth({ type: "create" })) return;
+    void (async () => {
+      if (myActiveGroups.length >= MAX_JOINED_GROUPS) {
+        setShowJoinLimit(true);
+        return;
+      }
+      if (userId) {
+        try {
+          const memberships = await countUserMemberships(userId, nickname);
+          if (memberships >= MAX_JOINED_GROUPS) {
+            setShowJoinLimit(true);
+            return;
+          }
+        } catch (error) {
+          console.error("membership count failed", error);
+        }
+      }
+      setShowCreate(true);
+    })();
   }
 
   async function openRoom(g: Group) {
@@ -386,12 +497,25 @@ export default function MunsApp() {
       return;
     }
 
-    const joinedCount = groups.filter((item) =>
-      isGroupMember(item, { userId, nickname }),
-    ).length;
-    if (joinedCount >= MAX_JOINED_GROUPS) {
-      setToast(`모임은 최대 ${MAX_JOINED_GROUPS}개까지 참여할 수 있습니다`);
+    const localJoinedCount = myActiveGroups.length;
+    if (!userId && localJoinedCount >= MAX_JOINED_GROUPS) {
+      setShowJoinLimit(true);
       return;
+    }
+    if (userId) {
+      try {
+        const memberships = await countUserMemberships(userId, nickname);
+        if (memberships >= MAX_JOINED_GROUPS) {
+          setShowJoinLimit(true);
+          return;
+        }
+      } catch (error) {
+        console.error("membership count failed", error);
+        if (localJoinedCount >= MAX_JOINED_GROUPS) {
+          setShowJoinLimit(true);
+          return;
+        }
+      }
     }
 
     const joinUserId = userId || "me";
@@ -409,6 +533,13 @@ export default function MunsApp() {
       ],
     };
 
+    const hadMembership = joinedGroupIds.some(
+      (id) => normalizeGroupId(id) === normalizeGroupId(g.id),
+    );
+    if (!hadMembership) {
+      setJoinedGroupIds((prev) => [...prev, g.id]);
+    }
+
     if (userId) {
       try {
         await addGroupMember(g.id, userId, joined.members.length, {
@@ -417,7 +548,17 @@ export default function MunsApp() {
         });
       } catch (error) {
         console.error("group join failed", error);
-        setToast("모임 참여에 실패했습니다");
+        if (!hadMembership) {
+          setJoinedGroupIds((prev) =>
+            prev.filter((id) => normalizeGroupId(id) !== normalizeGroupId(g.id)),
+          );
+        }
+        const message = error instanceof Error ? error.message : "";
+        if (message === JOIN_LIMIT_MESSAGE) {
+          setShowJoinLimit(true);
+        } else {
+          setToast("모임 참여에 실패했습니다");
+        }
         return;
       }
     }
@@ -461,6 +602,24 @@ export default function MunsApp() {
     }
     if (intent.type === "create") {
       pendingIntentRef.current = null;
+      if (myActiveGroups.length >= MAX_JOINED_GROUPS) {
+        setShowJoinLimit(true);
+        return;
+      }
+      if (userId) {
+        void countUserMemberships(userId, nickname)
+          .then((memberships) => {
+            if (memberships >= MAX_JOINED_GROUPS) {
+              setShowJoinLimit(true);
+              return;
+            }
+            setShowCreate(true);
+          })
+          .catch(() => {
+            setShowCreate(true);
+          });
+        return;
+      }
       setShowCreate(true);
       return;
     }
@@ -543,12 +702,15 @@ export default function MunsApp() {
           {tab === "info" && <InfoTab />}
           {tab === "find" && (
             <FindTab
+              key={userId ?? "guest"}
               groups={visibleGroups}
+              joinedGroupIds={joinedGroupIds}
               filter={filter}
               onFilterChange={setFilter}
               onOpenRoom={handleOpenRoom}
               myUserId={userId}
               nickname={nickname}
+              isLoggedIn={isLoggedIn()}
               loading={groupsLoading}
               error={groupsError}
               refreshing={groupsRefreshing}
@@ -565,10 +727,11 @@ export default function MunsApp() {
               onSelectProfileImage={applyProfileImage}
               profileImageUploading={profileImageUploading}
               groups={visibleGroups}
+              joinedGroupIds={joinedGroupIds}
               myUserId={userId}
               onOpenRoom={handleOpenRoom}
               onLogout={() => void handleLogout()}
-              onQuitGroup={(groupId) => {
+              onQuitGroup={async (groupId) => {
                 const joinUserId = userId || "me";
                 const target = groups.find((item) => item.id === groupId);
                 const remainingCount = target
@@ -576,6 +739,7 @@ export default function MunsApp() {
                       (member) => member.id !== joinUserId && member.id !== "me",
                     ).length
                   : 0;
+
                 setGroups((prev) =>
                   prev.map((item) =>
                     item.id === groupId
@@ -588,10 +752,26 @@ export default function MunsApp() {
                       : item,
                   ),
                 );
+                const nextJoinedIds = joinedGroupIds.filter(
+                  (id) => normalizeGroupId(id) !== normalizeGroupId(groupId),
+                );
+                setJoinedGroupIds(nextJoinedIds);
                 if (userId) {
-                  void removeGroupMember(groupId, userId, remainingCount).then(() => {
-                    void refreshGroups();
-                  });
+                  persistJoinedIds(userId, nextJoinedIds);
+                }
+
+                try {
+                  if (userId) {
+                    await removeGroupMember(groupId, userId, remainingCount);
+                  }
+                  setRoom((current) => (current?.id === groupId ? null : current));
+                  setToast("챌린지에서 퇴장했습니다");
+                  await refreshGroups();
+                } catch (error) {
+                  console.error("group quit failed", error);
+                  setToast("챌린지 퇴장에 실패했습니다");
+                  await refreshGroups();
+                  throw error;
                 }
               }}
               onGoFind={() => {
@@ -608,10 +788,7 @@ export default function MunsApp() {
         {/* 새 모임 개설 FAB — 모바일 프레임 기준 탭바 바로 위 고정 */}
         {tab === "find" && (
           <button
-            onClick={() => {
-              if (!requireAuth({ type: "create" })) return;
-              setShowCreate(true);
-            }}
+            onClick={() => tryOpenCreate()}
             aria-label="새 모임 개설"
             className="absolute bottom-20 right-5 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-[#00FF87] text-black shadow-[0_8px_24px_#00FF8766] transition-transform active:scale-90"
           >
@@ -665,6 +842,11 @@ export default function MunsApp() {
           onClose={() => setShowEntryDenied(false)}
         />
 
+        <JoinLimitModal
+          open={showJoinLimit}
+          onClose={() => setShowJoinLimit(false)}
+        />
+
         <NoticesSheet
           open={showNotices}
           onClose={() => setShowNotices(false)}
@@ -678,6 +860,8 @@ export default function MunsApp() {
           open={showCreate}
           onClose={() => setShowCreate(false)}
           onCreate={handleCreate}
+          onJoinLimit={() => setShowJoinLimit(true)}
+          joinedCount={myActiveGroups.length}
           onCreatedNotice={prependNotice}
           onNoticesRefresh={() => {
             void refreshNotices(true);
