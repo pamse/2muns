@@ -4,6 +4,11 @@ import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react
 import { AlertTriangle, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
+import {
+  displayNoticeContent,
+  isCheerNotice,
+  parseCheerLink,
+} from "@/lib/cheerNotifications";
 import { BottomSheet, Pill } from "./ui";
 
 function dismissedStorageKey(userId: string | null) {
@@ -284,6 +289,7 @@ export function NoticesSheet({
   loading,
   error,
   onDeleteNotice,
+  onNoticeClick,
 }: {
   open: boolean;
   onClose: () => void;
@@ -291,6 +297,7 @@ export function NoticesSheet({
   loading: boolean;
   error: string | null;
   onDeleteNotice?: (notice: Notice) => void | Promise<void>;
+  onNoticeClick?: (notice: Notice) => void;
 }) {
   function handleDelete(event: MouseEvent<HTMLButtonElement>, notice: Notice) {
     event.preventDefault();
@@ -320,14 +327,31 @@ export function NoticesSheet({
         <ul className="space-y-2.5">
           {notices.map((notice) => {
             const warning = isWarningNotice(notice);
+            const cheer = isCheerNotice(notice);
+            const clickable = cheer && Boolean(parseCheerLink(notice.content));
             return (
               <li
                 key={notice.id}
                 className={
                   warning
                     ? "relative rounded-2xl border border-orange-500/45 bg-orange-500/10 p-3.5 pr-10 shadow-[inset_3px_0_0_0_#f97316]"
-                    : "relative rounded-2xl border border-gray-800 bg-[#121316] p-3.5 pr-10"
+                    : cheer
+                      ? "relative cursor-pointer rounded-2xl border border-[#00FF87]/25 bg-[#00FF87]/5 p-3.5 pr-10 transition-colors hover:bg-[#00FF87]/10"
+                      : "relative rounded-2xl border border-gray-800 bg-[#121316] p-3.5 pr-10"
                 }
+                onClick={clickable ? () => onNoticeClick?.(notice) : undefined}
+                onKeyDown={
+                  clickable
+                    ? (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          onNoticeClick?.(notice);
+                        }
+                      }
+                    : undefined
+                }
+                role={clickable ? "button" : undefined}
+                tabIndex={clickable ? 0 : undefined}
               >
                 <button
                   type="button"
@@ -360,7 +384,7 @@ export function NoticesSheet({
                     warning ? "text-orange-100/75" : "text-gray-400"
                   }`}
                 >
-                  {notice.content}
+                  {displayNoticeContent(notice.content)}
                 </p>
               </li>
             );

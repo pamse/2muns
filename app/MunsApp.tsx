@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, removeGroupMember } from "@/lib/groups";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
+import { parseCheerLink } from "@/lib/cheerNotifications";
 import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import { useUserPoints } from "./useUserPoints";
 import {
@@ -610,6 +611,26 @@ export default function MunsApp() {
     void openRoom(g);
   }
 
+  function handleNoticeClick(notice: Notice) {
+    const link = parseCheerLink(notice.content);
+    if (!link) return;
+    const target = groups.find(
+      (item) => normalizeGroupId(item.id) === normalizeGroupId(link.groupId),
+    );
+    setShowNotices(false);
+    if (target) {
+      void openRoom(target);
+    } else {
+      setToast("모임 정보를 찾을 수 없습니다");
+    }
+  }
+
+  function handleCheerNotice(notice: Notice) {
+    if (notice.user_id && userId && notice.user_id === userId) {
+      prependNotice(notice);
+    }
+  }
+
   useEffect(() => {
     if (!ready || !hasNickname) return;
     const intent = pendingIntentRef.current;
@@ -861,6 +882,8 @@ export default function MunsApp() {
               void refreshGroups();
             }}
             onPointsEarned={handlePointsEarned}
+            onCheerNotice={handleCheerNotice}
+            onToast={setToast}
           />
         )}
 
@@ -881,6 +904,7 @@ export default function MunsApp() {
           loading={noticesLoading}
           error={noticesError}
           onDeleteNotice={removeNotice}
+          onNoticeClick={handleNoticeClick}
         />
 
         <CreateGroupSheet

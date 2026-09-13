@@ -44,6 +44,10 @@ import {
   type CheerSummary,
 } from "@/lib/cheers";
 import {
+  createCheerNotice,
+  revokeCheerNotice,
+} from "@/lib/cheerNotifications";
+import {
   awardDailyVerificationPoints,
   awardEmojiFeedbackPoints,
   type PointAwardResult,
@@ -162,20 +166,30 @@ function VerifyCaptionBadge({
 function CheerLikeButton({
   count,
   active,
-  readOnly = false,
+  ownPost = false,
   onToggle,
+  onOwnPostClick,
 }: {
   count: number;
   active: boolean;
-  readOnly?: boolean;
+  ownPost?: boolean;
   onToggle?: () => void;
+  onOwnPostClick?: () => void;
 }) {
-  const label = count > 0 ? `👍 ${count}` : "👍";
+  if (count <= 0) return null;
 
-  if (readOnly) {
-    if (count <= 0) return null;
+  const label = `👍 ${count}`;
+
+  if (ownPost) {
     return (
-      <div className="absolute top-2 right-2 z-10 flex items-center rounded-full border border-white/10 bg-black/50 px-2 py-1 text-[11px] font-semibold text-white backdrop-blur-sm">
+      <div
+        role="status"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOwnPostClick?.();
+        }}
+        className="absolute top-2 right-2 z-10 flex cursor-default items-center rounded-full border border-white/10 bg-black/50 px-2 py-1 text-[11px] font-semibold text-white backdrop-blur-sm"
+      >
         {label}
       </div>
     );
@@ -201,18 +215,54 @@ function CheerLikeButton({
   );
 }
 
+function resolveMemberUserId(
+  seatId: string,
+  rows: Verification[],
+  viewerUserId?: string | null,
+) {
+  const normalizedSeat = normalizeGroupId(seatId);
+  const matched = rows.find(
+    (row) => normalizeGroupId(row.user_id) === normalizedSeat,
+  );
+  if (matched) return matched.user_id;
+  if (normalizedSeat === "me" && viewerUserId) return viewerUserId;
+  return seatId;
+}
+
+function resolveCheerForSeat(
+  cheerMap: Record<string, CheerSummary>,
+  seat: Seat,
+  rows: Verification[],
+  viewerUserId?: string | null,
+) {
+  const resolvedId = resolveMemberUserId(seat.id, rows, viewerUserId);
+  const keys = [
+    normalizeGroupId(seat.id),
+    normalizeGroupId(resolvedId),
+  ];
+  if (seat.me && viewerUserId) {
+    keys.push(normalizeGroupId(viewerUserId));
+  }
+  for (const key of keys) {
+    if (key && cheerMap[key]) return cheerMap[key];
+  }
+  return undefined;
+}
+
 function MemberVerifyCard({
   seat,
   challengeDay,
   onVerifyMe,
   cheer,
   onToggleCheer,
+  onOwnPostClick,
 }: {
   seat: Seat;
   challengeDay: number;
   onVerifyMe: () => void;
   cheer?: CheerSummary;
   onToggleCheer?: () => void;
+  onOwnPostClick?: () => void;
 }) {
   if (seat.empty) {
     return (
@@ -309,7 +359,8 @@ function MemberVerifyCard({
         <CheerLikeButton
           count={cheer?.count ?? 0}
           active={Boolean(cheer?.cheeredByMe)}
-          readOnly={Boolean(seat.me) || !onToggleCheer}
+          ownPost={Boolean(seat.me)}
+          onOwnPostClick={onOwnPostClick}
           onToggle={onToggleCheer}
         />
       ) : null}
@@ -843,6 +894,8 @@ export function RoomDetail({
   autoOpenVerify = false,
   onAutoOpenVerifyHandled,
   onPointsEarned,
+  onCheerNotice,
+  onToast,
 }: {
   group: Group;
   onBack: () => void;
@@ -859,6 +912,8 @@ export function RoomDetail({
   autoOpenVerify?: boolean;
   onAutoOpenVerifyHandled?: () => void;
   onPointsEarned?: (result: PointAwardResult) => void;
+  onCheerNotice?: (notice: Notice) => void;
+  onToast?: (message: string) => void;
 }) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [dayRows, setDayRows] = useState<Verification[]>([]);
@@ -1086,19 +1141,40 @@ export function RoomDetail({
     };
   }, [group.id, challengeDay, started]);
 
+  const refreshCheerMap = useCallback(() => {
+    if (!started) return;
+    void fetchCheersForDay(group.id, challengeDay, userId).then(setCheerMap);
+  }, [group.id, challengeDay, started, userId]);
+
   useEffect(() => {
     if (!started) {
       setCheerMap({});
       return;
     }
-    let cancelled = false;
-    void fetchCheersForDay(group.id, challengeDay, userId).then((map) => {
-      if (!cancelled) setCheerMap(map);
-    });
+    refreshCheerMap();
+  }, [started, refreshCheerMap, dayRows]);
+
+  useEffect(() => {
+    if (!started || !group.id) return;
+    const channel = supabase
+      .channel(`cheers-${group.id}-${challengeDay}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "verification_cheers",
+          filter: `group_id=eq.${group.id}`,
+        },
+        () => {
+          refreshCheerMap();
+        },
+      )
+      .subscribe();
     return () => {
-      cancelled = true;
+      void supabase.removeChannel(channel);
     };
-  }, [group.id, challengeDay, started, userId, dayRows]);
+  }, [group.id, challengeDay, started, refreshCheerMap]);
 
   const seats = useMemo(
     () =>
@@ -1157,18 +1233,25 @@ export function RoomDetail({
   }
 
   async function handleToggleCheer(targetUserId: string) {
-    if (!userId || targetUserId === userId) return;
+    if (!userId) return;
+    const resolvedTarget = resolveMemberUserId(targetUserId, dayRows, userId);
+    const normalizedTarget = normalizeGroupId(resolvedTarget);
+    const normalizedSelf = normalizeGroupId(userId);
+    if (normalizedTarget === normalizedSelf || normalizedTarget === "me") {
+      return;
+    }
+
     try {
-      const wasCheered = cheerMap[normalizeGroupId(targetUserId)]?.cheeredByMe ?? false;
+      const wasCheered = cheerMap[normalizedTarget]?.cheeredByMe ?? false;
       const summary = await toggleVerificationCheer({
         groupId: group.id,
         day: challengeDay,
-        targetUserId,
+        targetUserId: resolvedTarget,
         cheererUserId: userId,
       });
       setCheerMap((prev) => ({
         ...prev,
-        [normalizeGroupId(targetUserId)]: summary,
+        [normalizedTarget]: summary,
       }));
 
       if (!wasCheered && summary.cheeredByMe) {
@@ -1181,6 +1264,25 @@ export function RoomDetail({
         if (result) {
           onPointsEarned?.(result);
         }
+
+        const notice = await createCheerNotice({
+          recipientUserId: resolvedTarget,
+          cheererUserId: userId,
+          cheererNickname: nickname || "모임원",
+          groupId: group.id,
+          groupName: group.name,
+          day: challengeDay,
+        });
+        if (notice) {
+          onCheerNotice?.(notice);
+        }
+      } else if (wasCheered && !summary.cheeredByMe) {
+        await revokeCheerNotice({
+          groupId: group.id,
+          day: challengeDay,
+          targetUserId: resolvedTarget,
+          cheererUserId: userId,
+        });
       }
     } catch (error) {
       console.error("cheer toggle failed", error);
@@ -1452,7 +1554,10 @@ export function RoomDetail({
                   key={`${challengeDay}-${seat.id}`}
                   seat={seat}
                   challengeDay={challengeDay}
-                  cheer={cheerMap[normalizeGroupId(seat.id)]}
+                  cheer={resolveCheerForSeat(cheerMap, seat, dayRows, userId)}
+                  onOwnPostClick={
+                    seat.me ? () => onToast?.("내가 올린 인증입니다") : undefined
+                  }
                   onToggleCheer={
                     viewingToday && userId && !seat.me && !seat.empty
                       ? () => void handleToggleCheer(seat.id)
