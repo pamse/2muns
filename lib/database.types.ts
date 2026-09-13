@@ -234,6 +234,33 @@ export type Database = {
         };
         Relationships: [];
       };
+      verification_cheers: {
+        Row: {
+          id: string;
+          group_id: string;
+          target_user_id: string;
+          cheerer_user_id: string;
+          day: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          group_id: string;
+          target_user_id: string;
+          cheerer_user_id: string;
+          day: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          group_id?: string;
+          target_user_id?: string;
+          cheerer_user_id?: string;
+          day?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       point_transactions: {
         Row: {
           id: string;

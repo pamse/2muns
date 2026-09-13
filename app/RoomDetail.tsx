@@ -23,6 +23,7 @@ import {
   isGroupMember,
   isGroupOwner,
   ME_AVATAR,
+  normalizeGroupId,
   type Group,
   type Member,
 } from "./data";
@@ -37,6 +38,11 @@ import {
   upsertVerification,
   verificationVideoUrl,
 } from "@/lib/verifications";
+import {
+  fetchCheersForDay,
+  toggleVerificationCheer,
+  type CheerSummary,
+} from "@/lib/cheers";
 import {
   awardDailyVerificationPoints,
   awardEmojiFeedbackPoints,
@@ -153,20 +159,60 @@ function VerifyCaptionBadge({
   );
 }
 
-const CHEER_EMOJIS = ["🔥", "👏", "💪"] as const;
+function CheerLikeButton({
+  count,
+  active,
+  readOnly = false,
+  onToggle,
+}: {
+  count: number;
+  active: boolean;
+  readOnly?: boolean;
+  onToggle?: () => void;
+}) {
+  const label = count > 0 ? `👍 ${count}` : "👍";
+
+  if (readOnly) {
+    if (count <= 0) return null;
+    return (
+      <div className="absolute top-2 right-2 z-10 flex items-center rounded-full border border-white/10 bg-black/50 px-2 py-1 text-[11px] font-semibold text-white backdrop-blur-sm">
+        {label}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label={active ? "응원 취소" : "응원하기"}
+      aria-pressed={active}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle?.();
+      }}
+      className={`absolute top-2 right-2 z-30 flex items-center rounded-full px-2 py-1 text-[11px] font-semibold backdrop-blur-sm transition-colors ${
+        active
+          ? "border border-emerald-500/50 bg-black/70 text-white shadow-[0_0_12px_rgba(16,185,129,0.25)]"
+          : "border border-white/10 bg-black/50 text-zinc-200 hover:bg-black/70"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
 
 function MemberVerifyCard({
   seat,
   challengeDay,
   onVerifyMe,
-  onCheer,
-  canCheer = false,
+  cheer,
+  onToggleCheer,
 }: {
   seat: Seat;
   challengeDay: number;
   onVerifyMe: () => void;
-  onCheer?: (emoji: string) => void;
-  canCheer?: boolean;
+  cheer?: CheerSummary;
+  onToggleCheer?: () => void;
 }) {
   if (seat.empty) {
     return (
@@ -259,20 +305,13 @@ function MemberVerifyCard({
         <VerifyCaptionBadge day={challengeDay} comment={seat.comment} />
       ) : null}
 
-      {verified && canCheer && onCheer ? (
-        <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center gap-1.5 px-2 pb-2">
-          {CHEER_EMOJIS.map((emoji) => (
-            <button
-              key={emoji}
-              type="button"
-              aria-label={`${seat.name}에게 ${emoji} 응원`}
-              onClick={() => onCheer(emoji)}
-              className="rounded-full border border-white/10 bg-black/55 px-2 py-1 text-sm backdrop-blur-sm transition-transform hover:scale-110 active:scale-95"
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
+      {verified ? (
+        <CheerLikeButton
+          count={cheer?.count ?? 0}
+          active={Boolean(cheer?.cheeredByMe)}
+          readOnly={Boolean(seat.me) || !onToggleCheer}
+          onToggle={onToggleCheer}
+        />
       ) : null}
     </article>
   );
@@ -823,6 +862,7 @@ export function RoomDetail({
 }) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [dayRows, setDayRows] = useState<Verification[]>([]);
+  const [cheerMap, setCheerMap] = useState<Record<string, CheerSummary>>({});
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -1046,6 +1086,20 @@ export function RoomDetail({
     };
   }, [group.id, challengeDay, started]);
 
+  useEffect(() => {
+    if (!started) {
+      setCheerMap({});
+      return;
+    }
+    let cancelled = false;
+    void fetchCheersForDay(group.id, challengeDay, userId).then((map) => {
+      if (!cancelled) setCheerMap(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [group.id, challengeDay, started, userId, dayRows]);
+
   const seats = useMemo(
     () =>
       seatsForChallengeDay(
@@ -1102,20 +1156,34 @@ export function RoomDetail({
     shiftDay(dx < 0 ? 1 : -1);
   }
 
-  async function handleCheerMember(targetUserId: string) {
+  async function handleToggleCheer(targetUserId: string) {
     if (!userId || targetUserId === userId) return;
     try {
-      const result = await awardEmojiFeedbackPoints(
-        userId,
-        group.id,
+      const wasCheered = cheerMap[normalizeGroupId(targetUserId)]?.cheeredByMe ?? false;
+      const summary = await toggleVerificationCheer({
+        groupId: group.id,
+        day: challengeDay,
         targetUserId,
-        challengeDay,
-      );
-      if (result) {
-        onPointsEarned?.(result);
+        cheererUserId: userId,
+      });
+      setCheerMap((prev) => ({
+        ...prev,
+        [normalizeGroupId(targetUserId)]: summary,
+      }));
+
+      if (!wasCheered && summary.cheeredByMe) {
+        const result = await awardEmojiFeedbackPoints(
+          userId,
+          group.id,
+          targetUserId,
+          challengeDay,
+        );
+        if (result) {
+          onPointsEarned?.(result);
+        }
       }
     } catch (error) {
-      console.error("emoji feedback points failed", error);
+      console.error("cheer toggle failed", error);
     }
   }
 
@@ -1384,14 +1452,12 @@ export function RoomDetail({
                   key={`${challengeDay}-${seat.id}`}
                   seat={seat}
                   challengeDay={challengeDay}
-                  canCheer={Boolean(
-                    viewingToday &&
-                      userId &&
-                      !seat.me &&
-                      !seat.empty &&
-                      (Boolean(seat.videoUrl) || Boolean(seat.verifiedAtLabel)),
-                  )}
-                  onCheer={() => void handleCheerMember(seat.id)}
+                  cheer={cheerMap[normalizeGroupId(seat.id)]}
+                  onToggleCheer={
+                    viewingToday && userId && !seat.me && !seat.empty
+                      ? () => void handleToggleCheer(seat.id)
+                      : undefined
+                  }
                   onVerifyMe={() => {
                     if (!viewingToday) return;
                     if (requireAuth && !requireAuth()) return;

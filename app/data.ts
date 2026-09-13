@@ -451,6 +451,42 @@ export const RANKING: RankUser[] = [
   { rank: 10, name: "도윤", color: C.cyan, points: 1250, avatarUrl: unsplash("1500648767791-00dcc994a43e") },
 ];
 
+/** mock 유저 + 현재 유저 포인트로 실시간 랭킹 계산 */
+export function buildLiveRanking(
+  mockUsers: RankUser[],
+  me: {
+    name: string;
+    points: number;
+    color?: string;
+    avatarUrl?: string | null;
+  },
+) {
+  const others = mockUsers.filter((user) => !user.me);
+  const meEntry: RankUser = {
+    rank: 0,
+    name: me.name,
+    color: me.color ?? C.green,
+    points: me.points,
+    avatarUrl: me.avatarUrl || ME_AVATAR,
+    me: true,
+  };
+
+  const sorted = [...others, meEntry].sort((a, b) => {
+    if (b.points !== a.points) return b.points - a.points;
+    if (a.me) return 1;
+    if (b.me) return -1;
+    return a.name.localeCompare(b.name, "ko");
+  });
+
+  const ranked = sorted.map((user, index) => ({ ...user, rank: index + 1 }));
+  const myRank = ranked.find((user) => user.me)?.rank ?? null;
+
+  return {
+    rank: myRank,
+    topTen: ranked.slice(0, 10),
+  };
+}
+
 /** 마이페이지에서 동시에 참여할 수 있는 최대 모임 수 */
 export const MAX_JOINED_GROUPS = 3;
 export const JOIN_LIMIT_MESSAGE = "모임참여는 3개까지 가능합니다";

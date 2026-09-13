@@ -24,6 +24,7 @@ import { validateNickname } from "./useNickname";
 import {
   COMPLETED_HABIT_REWARD_POINTS,
   MAX_JOINED_GROUPS,
+  buildLiveRanking,
   RANKING,
   SAMPLE_COMPLETED_HABITS,
   hasRaceStarted,
@@ -618,14 +619,23 @@ export function MyTab({
     shortsWindow && purgeLeft > 0 && shortsKey && dismissedShortsKey !== shortsKey,
   );
   const canAdd = myGroups.length < maxJoinedGroups;
-  const myStats = useMemo(() => {
-    const rank =
-      RANKING.filter((user) => user.points > userPoints).length + 1;
-    return {
+  const liveRanking = useMemo(
+    () =>
+      buildLiveRanking(RANKING, {
+        name: nickname || "나",
+        points: userPoints,
+        color: PROFILE.color,
+        avatarUrl: myProfileImage,
+      }),
+    [nickname, userPoints, myProfileImage],
+  );
+  const myStats = useMemo(
+    () => ({
       points: userPoints,
-      rank: userPoints > 0 || RANKING.some((user) => user.me) ? rank : null,
-    };
-  }, [userPoints]);
+      rank: liveRanking.rank,
+    }),
+    [userPoints, liveRanking.rank],
+  );
   const selectedHeartBonus = selected
     ? heartBonusByGroup[normalizeGroupId(selected.id)] ?? 0
     : 0;
@@ -969,9 +979,9 @@ export function MyTab({
           <Trophy size={16} className="text-[#00FF87]" /> 실시간 유저 랭킹 TOP 10
         </h2>
         <Card className="divide-y divide-gray-800 p-1">
-          {RANKING.map((u) => (
+          {liveRanking.topTen.map((u) => (
             <div
-              key={u.rank}
+              key={u.me ? "me" : `${u.rank}-${u.name}`}
               className={`flex items-center gap-3 rounded-xl p-3 ${
                 u.me ? "bg-[#00FF87]/10" : ""
               }`}
@@ -993,7 +1003,7 @@ export function MyTab({
                 )}
               </span>
               <Avatar
-                name={u.me ? nickname || u.name : u.name}
+                name={u.name}
                 color={u.color}
                 src={u.me ? myProfileImage ?? undefined : u.avatarUrl}
                 size={36}
@@ -1003,11 +1013,11 @@ export function MyTab({
                   u.me ? "text-[#00FF87]" : "text-white"
                 }`}
               >
-                {u.me ? nickname || u.name : u.name}
-                {u.me && <span className="ml-1 text-[11px] text-gray-400">· 나</span>}
+                {u.name}
+                {u.me ? <span className="ml-1 text-[11px] text-gray-400">· 나</span> : null}
               </span>
               <span className="text-sm font-bold text-gray-300">
-                {(u.me ? userPoints : u.points).toLocaleString()}
+                {u.points.toLocaleString()}
                 <span className="ml-0.5 text-[11px] font-normal text-gray-500">P</span>
               </span>
             </div>
