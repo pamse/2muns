@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, removeGroupMember } from "@/lib/groups";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
+import { withdrawUserAccount } from "@/lib/account";
 import { parseCheerLink } from "@/lib/cheerNotifications";
 import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import { useUserPoints } from "./useUserPoints";
@@ -155,6 +156,7 @@ export default function MunsApp() {
     saveInitialNickname,
     changeNickname,
     clearSession,
+    resetLocalSession,
   } = useNickname();
   const { notices, loading: noticesLoading, error: noticesError, refresh: refreshNotices, prependNotice, removeNotice } = useActiveNotices(userId, ready);
   const {
@@ -437,8 +439,7 @@ export default function MunsApp() {
     setTab(next);
   }
 
-  async function handleLogout() {
-    const prevUserId = userId;
+  function resetAppSessionState(prevUserId?: string | null) {
     setJoinedGroupIds([]);
     setRoom(null);
     setFilter("joinable");
@@ -453,7 +454,25 @@ export default function MunsApp() {
       clearPersistedJoinedIds(prevUserId);
     }
     clearImage();
+  }
+
+  async function handleLogout() {
+    const prevUserId = userId;
+    resetAppSessionState(prevUserId);
     await clearSession();
+    setTab("find");
+    window.location.href = "/";
+  }
+
+  async function handleWithdrawAccount() {
+    const prevUserId = userId;
+    resetAppSessionState(prevUserId);
+    if (prevUserId) {
+      await withdrawUserAccount(prevUserId);
+    } else {
+      await clearSession();
+    }
+    resetLocalSession();
     setTab("find");
     window.location.href = "/";
   }
@@ -772,6 +791,7 @@ export default function MunsApp() {
               myUserId={userId}
               onOpenRoom={handleOpenRoom}
               onLogout={() => void handleLogout()}
+              onWithdrawAccount={() => void handleWithdrawAccount()}
               onQuitGroup={async (groupId) => {
                 const joinUserId = userId || "me";
                 const target = groups.find((item) => item.id === groupId);

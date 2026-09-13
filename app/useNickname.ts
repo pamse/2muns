@@ -338,6 +338,13 @@ export function useNickname() {
     setUserId(null);
   }, []);
 
+  const resetLocalSession = useCallback(() => {
+    setNickname("");
+    setChangeLog([]);
+    setHasNickname(false);
+    setUserId(null);
+  }, []);
+
   return {
     nickname,
     userId,
@@ -348,5 +355,6 @@ export function useNickname() {
     saveInitialNickname,
     changeNickname,
     clearSession,
+    resetLocalSession,
   };
 }

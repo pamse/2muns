@@ -67,6 +67,38 @@ const PROFILE = {
   color: "linear-gradient(135deg,#00FF87,#0ea5e9)",
 };
 
+const USER_GUIDE_URL =
+  "https://humble-ray-f5a.notion.site/2muns-User-Manual-3da4df66ba9d807396d7f3f41721903e?source=copy_link";
+
+const TERMS_URL =
+  "https://humble-ray-f5a.notion.site/2m-ns-3da4df66ba9d80e981afc7f80e32271f";
+
+const PRIVACY_URL =
+  "https://humble-ray-f5a.notion.site/2m-ns-3da4df66ba9d80f29fb1f62e4e4d3172";
+
+function ExternalLinkCard({ href, title }: { href: string; title: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block cursor-pointer rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 transition-colors hover:border-zinc-700"
+    >
+      <span className="text-sm font-semibold text-white">{title}</span>
+    </a>
+  );
+}
+
+function FooterLinkCards() {
+  return (
+    <nav aria-label="이용 안내 및 약관" className="flex flex-col gap-2.5">
+      <ExternalLinkCard href={USER_GUIDE_URL} title="이용 가이드" />
+      <ExternalLinkCard href={TERMS_URL} title="이용약관" />
+      <ExternalLinkCard href={PRIVACY_URL} title="개인정보 처리방침" />
+    </nav>
+  );
+}
+
 const USE_COMPLETED_SAMPLES =
   process.env.NEXT_PUBLIC_DEMO_COMPLETED_HABITS === "1";
 
@@ -365,6 +397,104 @@ function QuitChallengeModal({
   );
 }
 
+const MUNSY_YELLOW_SRC = "/images/munsy/munsy-yellow.png";
+
+function WithdrawRetentionModal({
+  open,
+  userPoints,
+  withdrawing = false,
+  onClose,
+  onConfirmWithdraw,
+}: {
+  open: boolean;
+  userPoints: number;
+  withdrawing?: boolean;
+  onClose: () => void;
+  onConfirmWithdraw: () => void;
+}) {
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  const formattedPoints = `${Math.max(0, userPoints).toLocaleString()}P`;
+
+  useEffect(() => {
+    setHost(document.getElementById("muns-frame") ?? document.body);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !withdrawing) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, withdrawing, onClose]);
+
+  if (!open || !host) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="withdraw-retention-title"
+        className="w-full max-w-sm rounded-3xl border border-zinc-800 bg-zinc-900 p-6 text-center shadow-2xl"
+        style={{ animation: "withdrawRetentionIn 0.24s ease-out" }}
+      >
+        <div className="relative mx-auto h-24 w-24 overflow-hidden rounded-[1.75rem] bg-zinc-900">
+          <span
+            className="pointer-events-none absolute inset-4 rounded-full bg-orange-500/25 blur-2xl"
+            aria-hidden
+          />
+          <img
+            src={MUNSY_YELLOW_SRC}
+            alt="먼시"
+            width={96}
+            height={96}
+            className="relative h-full w-full object-contain"
+          />
+        </div>
+        <h2
+          id="withdraw-retention-title"
+          className="mt-3 text-lg font-bold text-white"
+        >
+          🔥 &quot;정말 먼시의 불꽃을 끌 건가요...?&quot;
+        </h2>
+        <p className="mt-3 break-keep text-sm leading-relaxed text-zinc-300">
+          작은 불씨였던 제가 여기까지 자란 건 당신 덕분이에요.
+          <br />
+          지금 떠나시면{" "}
+          <span className="font-semibold text-white">함께 밝힌 습관의 불꽃</span>
+          과{" "}
+          <span className="font-semibold text-emerald-400">{formattedPoints}</span>
+          가 영영 사라져요.
+          <br />
+          <br />
+          완벽하지 않아도 괜찮아요. 우리 하루만 더 같이 있어 봐요.
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={withdrawing}
+          className="mt-5 w-full rounded-xl bg-emerald-500 py-3.5 text-sm font-semibold text-black transition hover:bg-emerald-400 disabled:opacity-60"
+        >
+          하루만 더 해볼게요 (머무르기)
+        </button>
+        <button
+          type="button"
+          onClick={onConfirmWithdraw}
+          disabled={withdrawing}
+          className="mt-2 w-full py-2 text-xs text-zinc-500 underline underline-offset-4 transition hover:text-red-400 disabled:opacity-60"
+        >
+          {withdrawing ? "탈퇴 처리 중..." : "모든 불꽃을 끄고 탈퇴하기"}
+        </button>
+      </div>
+      <style>{`@keyframes withdrawRetentionIn{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+    </div>,
+    host,
+  );
+}
+
 function NicknameLimitModal({
   open,
   daysLeft,
@@ -472,6 +602,7 @@ export function MyTab({
   onOpenRoom,
   onQuitGroup,
   onLogout,
+  onWithdrawAccount,
   groups,
   joinedGroupIds,
   myUserId,
@@ -493,6 +624,7 @@ export function MyTab({
   onOpenRoom: (group: Group) => void;
   onQuitGroup: (groupId: string) => void | Promise<void>;
   onLogout: () => void;
+  onWithdrawAccount: () => void | Promise<void>;
   groups: Group[];
   joinedGroupIds?: string[];
   myUserId?: string | null;
@@ -536,6 +668,8 @@ export function MyTab({
   const [editError, setEditError] = useState<string | null>(null);
   const [savingNickname, setSavingNickname] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [verifiedState, setVerifiedState] = useState<{
     groupId: string;
@@ -739,11 +873,28 @@ export function MyTab({
   }
 
   async function handleLogout() {
-    if (loggingOut) return;
+    if (loggingOut || withdrawing) return;
     const confirmed = window.confirm("로그아웃 하시겠습니까?");
     if (!confirmed) return;
     setLoggingOut(true);
     onLogout();
+  }
+
+  function openWithdrawModal() {
+    if (withdrawing || loggingOut) return;
+    setShowWithdrawModal(true);
+  }
+
+  async function confirmWithdrawAccount() {
+    if (withdrawing || loggingOut) return;
+    setWithdrawing(true);
+    try {
+      await onWithdrawAccount();
+    } catch (error) {
+      console.error("account withdrawal failed", error);
+      window.alert("회원 탈퇴에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+      setWithdrawing(false);
+    }
   }
 
   async function saveNicknameEdit() {
@@ -1025,15 +1176,34 @@ export function MyTab({
         </Card>
       </section>
 
+      <FooterLinkCards />
+
       <button
         type="button"
         onClick={() => void handleLogout()}
-        disabled={loggingOut}
+        disabled={loggingOut || withdrawing}
         className="flex w-full items-center justify-center gap-1.5 py-4 text-center text-sm text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300 disabled:opacity-50"
       >
         <LogOut size={14} strokeWidth={2} />
         {loggingOut ? "로그아웃 중..." : "로그아웃"}
       </button>
+
+      <button
+        type="button"
+        onClick={openWithdrawModal}
+        disabled={loggingOut || withdrawing}
+        className="flex w-full items-center justify-center gap-1.5 pb-4 text-center text-sm text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300 disabled:opacity-50"
+      >
+        회원탈퇴
+      </button>
+
+      <WithdrawRetentionModal
+        open={showWithdrawModal}
+        userPoints={userPoints}
+        withdrawing={withdrawing}
+        onClose={() => !withdrawing && setShowWithdrawModal(false)}
+        onConfirmWithdraw={() => void confirmWithdrawAccount()}
+      />
 
       <WeeklyShortsModal
         open={showShortsModal}
