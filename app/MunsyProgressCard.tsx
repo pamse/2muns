@@ -1,7 +1,10 @@
 // 2müns — MY 탭 누적 실천율: 먼시 캐릭터 + 66일 게이지 카드
 "use client";
 
+import { useEffect, useState } from "react";
 import { Flame } from "lucide-react";
+
+const SPEECH_SLOT_MS = 30 * 60 * 1000;
 
 type MunsyStage = 1 | 2 | 3;
 
@@ -35,16 +38,67 @@ const MARKER_CLASS: Record<MunsyStage, string> = {
   3: "border-[#7dffd0] bg-[#00e599]",
 };
 
+const STAGE_MESSAGES: Record<MunsyStage, string[]> = {
+  1: [
+    "아직은 작은 불씨! 흔들리지 마",
+    "오늘의 한 걸음이 내일의 습관을 만들어요",
+    "시작이 반이에요, 함께 천천히 가요",
+    "작은 불씨도 꾸준하면 큰 불꽃이 돼요",
+    "완벽하지 않아도 괜찮아요, 계속해요",
+  ],
+  2: [
+    "불꽃이 활활! 습관이 자리잡았어요 🔥",
+    "이제 리듬이 생겼어요, 멋져요!",
+    "꾸준함이 실력이 되는 중이에요",
+    "습관의 불꽃, 점점 더 뜨거워지고 있어요",
+    "중반 구간! 지금 페이스 아주 좋아요",
+  ],
+  3: [
+    "66일 완주 성공! 전설의 푸른 불꽃 달성 🏆",
+    "끝까지 해냈어요! 진짜 대단해요",
+    "66일의 여정, 완주를 축하해요!",
+    "푸른 불꽃 먼시! 당신은 해냈어요",
+    "완주의 순간, 오래 기억될 거예요",
+  ],
+};
+
 function getMunsyStage(currentDays: number): MunsyStage {
   if (currentDays >= 66) return 3;
   if (currentDays >= 22) return 2;
   return 1;
 }
 
-function stageSpeech(stage: MunsyStage, currentDays: number, totalDays: number) {
-  if (stage === 3) return "66일 완주 성공! 전설의 푸른 불꽃 달성 🏆";
-  if (stage === 2) return "불꽃이 활활! 습관이 자리잡았어요 🔥";
-  return `아직은 작은 불씨! 흔들리지 마 (Day ${currentDays}/${totalDays})`;
+function getSpeechSlot(now = Date.now()) {
+  return Math.floor(now / SPEECH_SLOT_MS);
+}
+
+function stageSpeech(stage: MunsyStage, slot: number) {
+  const messages = STAGE_MESSAGES[stage];
+  return messages[slot % messages.length];
+}
+
+function useSpeechSlot() {
+  const [slot, setSlot] = useState(() => getSpeechSlot());
+
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+
+    const sync = () => setSlot(getSpeechSlot());
+
+    const msUntilNext = SPEECH_SLOT_MS - (Date.now() % SPEECH_SLOT_MS);
+    timeoutId = window.setTimeout(() => {
+      sync();
+      intervalId = window.setInterval(sync, SPEECH_SLOT_MS);
+    }, msUntilNext);
+
+    return () => {
+      if (timeoutId) window.clearTimeout(timeoutId);
+      if (intervalId) window.clearInterval(intervalId);
+    };
+  }, []);
+
+  return slot;
 }
 
 export function MunsyProgressCard({
@@ -58,6 +112,7 @@ export function MunsyProgressCard({
 }) {
   const days = Math.max(0, Math.min(currentDays, totalDays));
   const stage = getMunsyStage(days);
+  const speechSlot = useSpeechSlot();
   const pct = Math.round((days / totalDays) * 100);
   const day21Pct = (21 / totalDays) * 100;
 
@@ -82,7 +137,7 @@ export function MunsyProgressCard({
         <div
           className={`relative mb-3 max-w-[260px] rounded-2xl border px-3 py-1.5 text-center text-[12px] font-semibold leading-relaxed ${BUBBLE_CLASS[stage]}`}
         >
-          {stageSpeech(stage, days, totalDays)}
+          {stageSpeech(stage, speechSlot)}
           <span
             className={`absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 border-b border-r ${
               stage === 1
