@@ -444,17 +444,6 @@ export async function fetchUserActiveGroupIds(
           if (id) ids.add(id);
         }
       }
-
-      const creatorResult = await supabase
-        .from("groups")
-        .select("id, status")
-        .eq("created_by", membershipUserId);
-      if (!creatorResult.error) {
-        for (const row of creatorResult.data ?? []) {
-          const id = normalizeGroupId(row.id);
-          if (id) ids.add(id);
-        }
-      }
     }
   }
 
