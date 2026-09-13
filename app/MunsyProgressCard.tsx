@@ -81,8 +81,8 @@ function useSpeechSlot() {
   const [slot, setSlot] = useState(() => getSpeechSlot());
 
   useEffect(() => {
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let intervalId: ReturnType<typeof setInterval> | undefined;
+    let timeoutId: number | undefined;
+    let intervalId: number | undefined;
 
     const sync = () => setSlot(getSpeechSlot());
 

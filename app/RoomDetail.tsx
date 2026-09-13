@@ -3,7 +3,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Camera, ChevronLeft, ChevronRight, Download, Loader2, Lock, Users } from "lucide-react";
+import {
+  ArrowLeft,
+  Camera,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardList,
+  Download,
+  Loader2,
+  Lock,
+  Users,
+  X,
+} from "lucide-react";
+import { ATTENDANCE_LIVES } from "./AttendanceStrip";
 import { CameraVerifyModal } from "./CameraVerifyModal";
 import {
   getGroupOwnerId,
@@ -406,6 +418,139 @@ function isCurrentMember(member: Member, userId?: string | null) {
   return member.id === "me" || (Boolean(userId) && member.id === userId);
 }
 
+function authScheduleText(group: Group) {
+  if (group.verifyAnytime) {
+    return "24시간 자유 인증 (시간 제한 없음)";
+  }
+  const start = formatClock(group.verifyStartHour ?? 5);
+  const end = formatClock(group.verifyEndHour ?? 9);
+  return `매일 ${start} ~ ${end} 사이 영상 인증`;
+}
+
+const CHALLENGE_RULE_LINES = [
+  "매일 지정된 인증 시간에 숏폼 영상으로 습관을 인증합니다.",
+  `미인증 시 출석 하트가 1개 차감됩니다. (최대 ${ATTENDANCE_LIVES}개)`,
+  "66일 레이스 기간 동안 꾸준히 실천해 완주를 목표로 합니다.",
+  "레이스 시작 후에는 기존 참여 멤버만 모임방에 입장할 수 있습니다.",
+  "모임 정원은 최대 6명이며, 한 계정당 동시 참여 가능한 모임은 3개까지입니다.",
+];
+
+function GroupRulesModal({
+  group,
+  open,
+  onClose,
+}: {
+  group: Group;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [host, setHost] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setHost(document.getElementById("muns-frame") ?? document.body);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open || !host) return null;
+
+  return createPortal(
+    <div className="absolute inset-0 z-[85] flex items-center justify-center px-4 py-6">
+      <button
+        type="button"
+        aria-label="닫기"
+        onClick={onClose}
+        className="absolute inset-0 bg-black/65 backdrop-blur-sm"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="group-rules-title"
+        className="relative z-10 flex w-full max-w-[420px] max-h-[85vh] flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900 shadow-[0_20px_48px_rgba(0,0,0,0.5)]"
+      >
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-800 px-5 py-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#00FF87]/10 text-xl">
+              {group.icon || "🔥"}
+            </div>
+            <h2
+              id="group-rules-title"
+              className="pt-1.5 text-base font-bold leading-snug text-white"
+            >
+              {group.name}
+            </h2>
+          </div>
+          <button
+            type="button"
+            aria-label="닫기"
+            onClick={onClose}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4" style={{ maxHeight: "70vh" }}>
+          <section>
+            <h3 className="text-[12px] font-bold uppercase tracking-wide text-zinc-500">
+              모임 소개
+            </h3>
+            <p className="mt-2 whitespace-pre-wrap text-[14px] leading-relaxed text-zinc-300">
+              {group.intro?.trim() || "등록된 소개가 없습니다."}
+            </p>
+          </section>
+
+          <section className="mt-5">
+            <h3 className="text-[12px] font-bold uppercase tracking-wide text-zinc-500">
+              인증 시간 및 방식
+            </h3>
+            <ul className="mt-2 space-y-2 text-[13px] leading-relaxed text-zinc-300">
+              <li>{authScheduleText(group)}</li>
+              <li>
+                챌린지 기간: 총 {group.total}일 레이스 (Day 1부터 {group.total}일까지)
+              </li>
+              {group.category ? (
+                <li>카테고리: {group.category}</li>
+              ) : null}
+            </ul>
+          </section>
+
+          <section className="mt-5">
+            <h3 className="text-[12px] font-bold uppercase tracking-wide text-zinc-500">
+              인증 및 운영 규칙
+            </h3>
+            <ul className="mt-2 list-disc space-y-2 pl-4 text-[13px] leading-relaxed text-zinc-400">
+              {CHALLENGE_RULE_LINES.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </section>
+        </div>
+
+        <div className="shrink-0 border-t border-zinc-800 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full rounded-xl bg-[#00FF87] py-3.5 text-sm font-bold text-black transition-transform active:scale-[0.98]"
+          >
+            확인
+          </button>
+        </div>
+      </div>
+    </div>,
+    host,
+  );
+}
+
 function WaitingInfoCard({ group }: { group: Group }) {
   const anytime = Boolean(group.verifyAnytime);
   const start = formatClock(group.verifyStartHour ?? 5);
@@ -656,6 +801,7 @@ export function RoomDetail({
   const [startBanner, setStartBanner] = useState<string | null>(null);
   const [forcedStarted, setForcedStarted] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"leave" | "delete" | null>(null);
+  const [showGroupRules, setShowGroupRules] = useState(false);
   const [busy, setBusy] = useState(false);
   const currentDay = Math.max(
     1,
@@ -1117,6 +1263,14 @@ export function RoomDetail({
                 ? `대기 중 · ${group.members.length}/${group.capacity}명`
                 : `둘러보기 · ${group.members.length}/${group.capacity}명`}
           </p>
+          <button
+            type="button"
+            onClick={() => setShowGroupRules(true)}
+            className="mt-1 inline-flex cursor-pointer items-center gap-1 text-xs text-zinc-400 underline-offset-4 transition-colors hover:text-white hover:underline"
+          >
+            <ClipboardList size={12} aria-hidden />
+            모임 소개 및 규칙
+          </button>
         </div>
       </header>
 
@@ -1217,6 +1371,12 @@ export function RoomDetail({
           if (!uploading) setCameraOpen(false);
         }}
         onConfirm={handleConfirmCapture}
+      />
+
+      <GroupRulesModal
+        group={group}
+        open={showGroupRules}
+        onClose={() => setShowGroupRules(false)}
       />
     </div>
   );
