@@ -182,6 +182,8 @@ export type Database = {
           avatar_url: string | null;
           selected_categories: string[] | null;
           nickname_updated_at: string | null;
+          points: number;
+          extra_group_slots: number;
           created_at: string;
         };
         Insert: {
@@ -191,6 +193,8 @@ export type Database = {
           avatar_url?: string | null;
           selected_categories?: string[] | null;
           nickname_updated_at?: string | null;
+          points?: number;
+          extra_group_slots?: number;
           created_at?: string;
         };
         Update: {
@@ -200,6 +204,59 @@ export type Database = {
           avatar_url?: string | null;
           selected_categories?: string[] | null;
           nickname_updated_at?: string | null;
+          points?: number;
+          extra_group_slots?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      user_group_bonuses: {
+        Row: {
+          id: string;
+          user_id: string;
+          group_id: string;
+          heart_bonus: number;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          group_id: string;
+          heart_bonus?: number;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          group_id?: string;
+          heart_bonus?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      point_transactions: {
+        Row: {
+          id: string;
+          user_id: string;
+          amount: number;
+          reason: string;
+          ref_key: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          amount: number;
+          reason: string;
+          ref_key: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          amount?: number;
+          reason?: string;
+          ref_key?: string;
           created_at?: string;
         };
         Relationships: [];

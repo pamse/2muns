@@ -177,6 +177,56 @@ export function isEndedGroup(group: Group) {
   return isEndedGroupStatus(group.dbStatus);
 }
 
+export function isCompletedGroupStatus(status?: string | null) {
+  const value = (status || "").trim().toLowerCase();
+  return value === "completed" || value === "finished";
+}
+
+/** 66일 레이스를 완주한 모임 (`groups.status = completed` 등) */
+export function isCompletedGroup(group: Group) {
+  return isCompletedGroupStatus(group.dbStatus);
+}
+
+/** MY 탭 — 완주한 66일 습관 히스토리 항목 */
+export type CompletedHabitRecord = {
+  id: string;
+  name: string;
+  startKey: string;
+  endKey: string;
+  points: number;
+  completionRate: number;
+};
+
+/** 완주 보상 포인트 (66일 최종 완주) */
+export const COMPLETED_HABIT_REWARD_POINTS = 1000;
+
+/** UI 확인용 샘플 (실제 완주 데이터가 없을 때는 빈 상태를 우선 표시) */
+export const SAMPLE_COMPLETED_HABITS: CompletedHabitRecord[] = [
+  {
+    id: "sample-completed-1",
+    name: "오운완",
+    startKey: "2026-07-01",
+    endKey: "2026-09-05",
+    points: COMPLETED_HABIT_REWARD_POINTS,
+    completionRate: 100,
+  },
+  {
+    id: "sample-completed-2",
+    name: "매일매일 코딩인생",
+    startKey: "2026-03-01",
+    endKey: "2026-05-06",
+    points: COMPLETED_HABIT_REWARD_POINTS,
+    completionRate: 100,
+  },
+];
+
+export function listUserCompletedGroups(
+  groups: Group[],
+  me: { userId?: string | null; nickname?: string | null } = {},
+) {
+  return groups.filter((group) => isCompletedGroup(group) && isGroupMember(group, me));
+}
+
 export function hasRaceStarted(group: Group) {
   if (group.raceStatus === "started") {
     return true;

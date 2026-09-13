@@ -396,6 +396,7 @@ export function CreateGroupSheet({
   onCreate,
   onJoinLimit,
   joinedCount = 0,
+  maxJoinedGroups = MAX_JOINED_GROUPS,
   onCreatedNotice,
   onNoticesRefresh,
   ownerId = "me",
@@ -407,6 +408,7 @@ export function CreateGroupSheet({
   onCreate: (g: Group) => void;
   onJoinLimit?: () => void;
   joinedCount?: number;
+  maxJoinedGroups?: number;
   onCreatedNotice?: (notice: Notice) => void;
   onNoticesRefresh?: () => void;
   ownerId?: string;
@@ -426,7 +428,7 @@ export function CreateGroupSheet({
 
   async function handleSubmit() {
     if (!canSubmit) return;
-    if (joinedCount >= MAX_JOINED_GROUPS) {
+    if (joinedCount >= maxJoinedGroups) {
       onClose();
       onJoinLimit?.();
       return;
@@ -439,7 +441,7 @@ export function CreateGroupSheet({
     if (ownerId && ownerId !== "me") {
       try {
         const memberships = await countUserMemberships(ownerId);
-        if (memberships >= MAX_JOINED_GROUPS) {
+        if (memberships >= maxJoinedGroups) {
           setSaving(false);
           onClose();
           onJoinLimit?.();

@@ -6,35 +6,54 @@ import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   Camera,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Crown,
   Loader2,
   LogOut,
   Pencil,
   ShieldCheck,
+  ShoppingBag,
   Star,
   Trophy,
   X,
 } from "lucide-react";
+import { PointShopModal } from "./PointShopModal";
 import { validateNickname } from "./useNickname";
 import {
+  COMPLETED_HABIT_REWARD_POINTS,
   MAX_JOINED_GROUPS,
   RANKING,
+  SAMPLE_COMPLETED_HABITS,
   hasRaceStarted,
   listJoinedActiveGroups,
+  listUserCompletedGroups,
+  normalizeGroupId,
+  type CompletedHabitRecord,
   type Group,
 } from "./data";
+import { fetchUserCompletedGroups } from "@/lib/groups";
 import { AttendanceStrip, ATTENDANCE_LIVES } from "./AttendanceStrip";
 import { MunsyProgressCard } from "./MunsyProgressCard";
 import { Avatar, BottomSheet, Card, Pill } from "./ui";
 import { WeeklyShortsModal } from "./WeeklyShortsModal";
 import {
+  addDaysToKey,
   challengeDayNumber,
   countMissedChallengeDays,
   getWeeklyShortsWindow,
+  localDateKey,
   resolveStartedAt,
 } from "@/lib/dates";
 import { fetchUserVerificationDays } from "@/lib/verifications";
+import {
+  awardCompletionPoints,
+  POINT_SPEND,
+  purchaseHeartRecharge,
+  purchaseSlotExpansion,
+  type UserPointsSnapshot,
+} from "@/lib/points";
 
 function formatHms(totalSeconds: number) {
   const h = Math.floor(totalSeconds / 3600);
@@ -45,9 +64,166 @@ function formatHms(totalSeconds: number) {
 
 const PROFILE = {
   color: "linear-gradient(135deg,#00FF87,#0ea5e9)",
-  points: 1980,
-  rank: 4,
 };
+
+const USE_COMPLETED_SAMPLES =
+  process.env.NEXT_PUBLIC_DEMO_COMPLETED_HABITS === "1";
+
+function formatDotDate(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  if (!year || !month || !day) return dateKey;
+  return `${year}.${month}.${day}`;
+}
+
+function groupToCompletedHabit(group: Group): CompletedHabitRecord {
+  const startedAt = resolveStartedAt(group.startedAt, group.day || group.total, new Date());
+  const startKey = localDateKey(startedAt);
+  const total = group.total || 66;
+  const endKey = addDaysToKey(startKey, total - 1);
+  return {
+    id: group.id,
+    name: group.name,
+    startKey,
+    endKey,
+    points: COMPLETED_HABIT_REWARD_POINTS,
+    completionRate: 100,
+  };
+}
+
+function CompletedHabitsAccordion({ items }: { items: CompletedHabitRecord[] }) {
+  const [open, setOpen] = useState(false);
+  const count = items.length;
+
+  return (
+    <Card className="overflow-hidden border-zinc-800 bg-zinc-900 p-0">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        className="flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-zinc-800/40"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <span aria-hidden className="text-base">
+            🏆
+          </span>
+          <span className="truncate text-sm font-semibold text-white">
+            완주한 66일 습관
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 text-sm text-zinc-400">
+          {count}개
+          {open ? (
+            <ChevronUp size={16} className="text-zinc-500" aria-hidden />
+          ) : (
+            <ChevronDown size={16} className="text-zinc-500" aria-hidden />
+          )}
+        </span>
+      </button>
+
+      <div
+        className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="border-t border-zinc-800 px-4 pb-4 pt-3">
+            {count === 0 ? (
+              <p className="text-[13px] leading-relaxed text-zinc-500">
+                아직 완주한 습관이 없어요. 66일 완주를 향해 달려보세요!
+              </p>
+            ) : (
+              <ul className="space-y-2.5">
+                {items.map((item) => (
+                  <li
+                    key={item.id}
+                    className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-semibold text-white">{item.name}</p>
+                      <span className="shrink-0 rounded-full border border-amber-400/30 bg-gradient-to-r from-[#00FF87]/15 to-amber-400/15 px-2 py-0.5 text-[10px] font-bold text-[#00FF87]">
+                        66일 완주
+                      </span>
+                    </div>
+                    <p className="mt-2 text-[12px] text-zinc-400">
+                      수행기간: {formatDotDate(item.startKey)} ~ {formatDotDate(item.endKey)}
+                    </p>
+                    <p className="mt-1 text-[12px] font-semibold text-amber-300">
+                      +{item.points.toLocaleString()} P · {item.completionRate}%
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function MyPageStatsBlock({
+  completedHabits,
+  points,
+  rank,
+  onOpenShop,
+}: {
+  completedHabits: CompletedHabitRecord[];
+  points: number;
+  rank: number | null;
+  onOpenShop: () => void;
+}) {
+  return (
+    <>
+      <CompletedHabitsAccordion items={completedHabits} />
+      <PointsRankingSummary points={points} rank={rank} onOpenShop={onOpenShop} />
+    </>
+  );
+}
+
+function PointsRankingSummary({
+  points,
+  rank,
+  onOpenShop,
+}: {
+  points: number;
+  rank: number | null;
+  onOpenShop: () => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-3">
+      <Card className="flex flex-col gap-1 p-4">
+        <div className="flex items-center gap-1.5 text-gray-400">
+          <Star size={15} className="text-[#00FF87]" />
+          <span className="text-xs">획득 포인트</span>
+        </div>
+        <p className="text-2xl font-extrabold text-white">
+          {points.toLocaleString()}
+          <span className="ml-1 text-sm font-medium text-gray-500">P</span>
+        </p>
+      </Card>
+      <Card className="flex flex-col gap-1 p-4">
+        <div className="flex items-center gap-1.5 text-gray-400">
+          <Trophy size={15} className="text-[#00FF87]" />
+          <span className="text-xs">실시간 랭킹</span>
+        </div>
+        <p className="text-2xl font-extrabold text-white">
+          {rank ?? "-"}
+          <span className="ml-0.5 text-sm font-medium text-gray-500">위</span>
+        </p>
+      </Card>
+      </div>
+      <button
+        type="button"
+        onClick={onOpenShop}
+        className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-xs font-semibold text-zinc-300 transition-colors hover:border-[#00FF87]/35 hover:text-white"
+      >
+        <ShoppingBag size={14} className="text-[#00FF87]" />
+        포인트 상점 · 아이템 교환소
+      </button>
+    </div>
+  );
+}
 
 function ProfilePhotoButton({
   src,
@@ -305,6 +481,12 @@ export function MyTab({
   myProfileImage,
   onSelectProfileImage,
   profileImageUploading = false,
+  userPoints = 0,
+  extraGroupSlots = 0,
+  maxJoinedGroups = MAX_JOINED_GROUPS,
+  heartBonusByGroup = {},
+  onPointsToast,
+  onPointsSnapshot,
 }: {
   onGoFind: () => void;
   onOpenRoom: (group: Group) => void;
@@ -320,6 +502,12 @@ export function MyTab({
   myProfileImage: string | null;
   onSelectProfileImage: (file: File) => void | Promise<void>;
   profileImageUploading?: boolean;
+  userPoints?: number;
+  extraGroupSlots?: number;
+  maxJoinedGroups?: number;
+  heartBonusByGroup?: Record<string, number>;
+  onPointsToast?: (message: string) => void;
+  onPointsSnapshot?: (snapshot: UserPointsSnapshot) => void;
 }) {
   const joinedGroups = useMemo(
     () =>
@@ -331,10 +519,12 @@ export function MyTab({
     [groups, joinedGroupIds, myUserId, nickname],
   );
   const myGroups = useMemo(
-    () => joinedGroups.slice(0, MAX_JOINED_GROUPS),
-    [joinedGroups],
+    () => joinedGroups.slice(0, maxJoinedGroups),
+    [joinedGroups, maxJoinedGroups],
   );
   const [selectedId, setSelectedId] = useState(myGroups[0]?.id ?? "");
+  const [showPointShop, setShowPointShop] = useState(false);
+  const [purchasing, setPurchasing] = useState(false);
   const [showQuit, setShowQuit] = useState(false);
   const [quitting, setQuitting] = useState(false);
   const [dismissedShortsKey, setDismissedShortsKey] = useState<string | null>(null);
@@ -350,6 +540,7 @@ export function MyTab({
     groupId: string;
     days: number[];
   } | null>(null);
+  const [fetchedCompletedGroups, setFetchedCompletedGroups] = useState<Group[]>([]);
 
   useEffect(() => {
     if (myGroups.length === 0) {
@@ -370,6 +561,25 @@ export function MyTab({
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [started, selected?.id]);
+
+  useEffect(() => {
+    if (!myUserId) {
+      setFetchedCompletedGroups([]);
+      return;
+    }
+    let cancelled = false;
+    void fetchUserCompletedGroups(myUserId, nickname)
+      .then((rows) => {
+        if (!cancelled) setFetchedCompletedGroups(rows);
+      })
+      .catch((error) => {
+        console.error("completed groups fetch failed", error);
+        if (!cancelled) setFetchedCompletedGroups([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [myUserId, nickname]);
 
   useEffect(() => {
     if (!selected?.id || !started || !myUserId) return;
@@ -407,7 +617,93 @@ export function MyTab({
   const showShortsBanner = Boolean(
     shortsWindow && purgeLeft > 0 && shortsKey && dismissedShortsKey !== shortsKey,
   );
-  const canAdd = myGroups.length < MAX_JOINED_GROUPS;
+  const canAdd = myGroups.length < maxJoinedGroups;
+  const myStats = useMemo(() => {
+    const rank =
+      RANKING.filter((user) => user.points > userPoints).length + 1;
+    return {
+      points: userPoints,
+      rank: userPoints > 0 || RANKING.some((user) => user.me) ? rank : null,
+    };
+  }, [userPoints]);
+  const selectedHeartBonus = selected
+    ? heartBonusByGroup[normalizeGroupId(selected.id)] ?? 0
+    : 0;
+  const livesLeft = progress
+    ? Math.min(
+        ATTENDANCE_LIVES,
+        ATTENDANCE_LIVES - progress.missCount + selectedHeartBonus,
+      )
+    : ATTENDANCE_LIVES;
+  const completedHabits = useMemo(() => {
+    const merged = new Map<string, Group>();
+    for (const group of listUserCompletedGroups(groups, {
+      userId: myUserId,
+      nickname,
+    })) {
+      merged.set(normalizeGroupId(group.id), group);
+    }
+    for (const group of fetchedCompletedGroups) {
+      merged.set(normalizeGroupId(group.id), group);
+    }
+    const records = [...merged.values()].map(groupToCompletedHabit);
+    if (records.length > 0) return records;
+    return USE_COMPLETED_SAMPLES ? SAMPLE_COMPLETED_HABITS : [];
+  }, [groups, fetchedCompletedGroups, myUserId, nickname]);
+
+  useEffect(() => {
+    if (!myUserId) return;
+    const realGroups = listUserCompletedGroups(groups, {
+      userId: myUserId,
+      nickname,
+    });
+    for (const group of [...realGroups, ...fetchedCompletedGroups]) {
+      void awardCompletionPoints(myUserId, group.id).then((result) => {
+        if (result && result.totalAwarded > 0) {
+          onPointsToast?.(result.messages.join(" · "));
+        }
+      });
+    }
+  }, [groups, fetchedCompletedGroups, myUserId, nickname, onPointsToast]);
+
+  async function handlePurchaseHeart() {
+    if (!myUserId || !selected || purchasing) return;
+    setPurchasing(true);
+    try {
+      const result = await purchaseHeartRecharge(
+        myUserId,
+        selected.id,
+        livesLeft,
+        ATTENDANCE_LIVES,
+      );
+      if (!result.ok) {
+        onPointsToast?.(result.message);
+        return;
+      }
+      if (result.snapshot) onPointsSnapshot?.(result.snapshot);
+      onPointsToast?.(`-${POINT_SPEND.HEART_RECHARGE}P · ${result.message}`);
+      setShowPointShop(false);
+    } finally {
+      setPurchasing(false);
+    }
+  }
+
+  async function handlePurchaseSlot() {
+    if (!myUserId || purchasing) return;
+    setPurchasing(true);
+    try {
+      const result = await purchaseSlotExpansion(myUserId);
+      if (!result.ok) {
+        onPointsToast?.(result.message);
+        return;
+      }
+      if (result.snapshot) onPointsSnapshot?.(result.snapshot);
+      onPointsToast?.(`-${POINT_SPEND.SLOT_EXPANSION}P · ${result.message}`);
+      setShowPointShop(false);
+    } finally {
+      setPurchasing(false);
+    }
+  }
 
   async function handleQuit() {
     if (!selected || quitting) return;
@@ -496,7 +792,12 @@ export function MyTab({
       {/* 참여 중인 챌린지 칩 */}
       <section>
         <p className="mb-2 px-1 text-sm font-bold text-gray-300">
-          참여 중인 챌린지 ({myGroups.length}/{MAX_JOINED_GROUPS}개)
+          참여 중인 챌린지 ({myGroups.length}/{maxJoinedGroups}개)
+          {extraGroupSlots > 0 ? (
+            <span className="ml-1 text-[11px] font-medium text-[#00FF87]">
+              · 슬롯 +{extraGroupSlots}
+            </span>
+          ) : null}
         </p>
         <div className="flex flex-wrap gap-2">
           {myGroups.map((group) => {
@@ -578,37 +879,18 @@ export function MyTab({
             totalDays={progress.totalDays}
             streak={progress.streak}
           />
-
-          {/* 포인트 & 랭킹 요약 */}
-          <div className="grid grid-cols-2 gap-3">
-            <Card className="flex flex-col gap-1 p-4">
-              <div className="flex items-center gap-1.5 text-gray-400">
-                <Star size={15} className="text-[#00FF87]" />
-                <span className="text-xs">획득 포인트</span>
-              </div>
-              <p className="text-2xl font-extrabold text-white">
-                {PROFILE.points.toLocaleString()}
-                <span className="ml-1 text-sm font-medium text-gray-500">P</span>
-              </p>
-            </Card>
-            <Card className="flex flex-col gap-1 p-4">
-              <div className="flex items-center gap-1.5 text-gray-400">
-                <Trophy size={15} className="text-[#00FF87]" />
-                <span className="text-xs">실시간 랭킹</span>
-              </div>
-              <p className="text-2xl font-extrabold text-white">
-                {PROFILE.rank}
-                <span className="ml-0.5 text-sm font-medium text-gray-500">위</span>
-              </p>
-            </Card>
-          </div>
-
+          <MyPageStatsBlock
+            completedHabits={completedHabits}
+            points={myStats.points}
+            rank={myStats.rank}
+            onOpenShop={() => setShowPointShop(true)}
+          />
           <section>
             <AttendanceStrip
               startedAt={progress.startedAt}
               totalDays={progress.totalDays}
               verifiedDays={progress.verifiedDays}
-              livesLeft={ATTENDANCE_LIVES - progress.missCount}
+              livesLeft={livesLeft}
             />
             <button
               type="button"
@@ -620,39 +902,66 @@ export function MyTab({
           </section>
         </>
       ) : selected && recruiting ? (
-        <Card className="p-5 text-center">
-          <p className="text-sm leading-relaxed text-zinc-300">
-            ⏳ 아직 레이스가 시작되지 않았습니다. (멤버 대기 중)
-          </p>
-          <button
-            type="button"
-            onClick={() => onOpenRoom(selected)}
-            className="mt-4 w-full rounded-xl bg-[#00FF87] py-3 text-sm font-bold text-black transition-transform active:scale-[0.98]"
-          >
-            모임방 대기실 바로가기
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowQuit(true)}
-            className="mt-4 block w-full text-center text-xs text-slate-500 hover:text-slate-400"
-          >
-            챌린지 포기하기
-          </button>
-        </Card>
+        <>
+          <Card className="p-5 text-center">
+            <p className="text-sm leading-relaxed text-zinc-300">
+              ⏳ 아직 레이스가 시작되지 않았습니다. (멤버 대기 중)
+            </p>
+            <button
+              type="button"
+              onClick={() => onOpenRoom(selected)}
+              className="mt-4 w-full rounded-xl bg-[#00FF87] py-3 text-sm font-bold text-black transition-transform active:scale-[0.98]"
+            >
+              모임방 대기실 바로가기
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowQuit(true)}
+              className="mt-4 block w-full text-center text-xs text-slate-500 hover:text-slate-400"
+            >
+              챌린지 포기하기
+            </button>
+          </Card>
+          <MyPageStatsBlock
+            completedHabits={completedHabits}
+            points={myStats.points}
+            rank={myStats.rank}
+            onOpenShop={() => setShowPointShop(true)}
+          />
+        </>
       ) : (
-        <Card className="p-8 text-center">
-          <p className="text-sm leading-relaxed text-gray-400">
-            아직 참여 중인 모임이 없습니다. 새로운 모임을 찾아보세요!
-          </p>
-          <button
-            type="button"
-            onClick={onGoFind}
-            className="mt-4 rounded-xl bg-[#00FF87] px-4 py-2.5 text-sm font-bold text-black transition-transform active:scale-[0.98]"
-          >
-            모임 둘러보기
-          </button>
-        </Card>
+        <>
+          <Card className="p-8 text-center">
+            <p className="text-sm leading-relaxed text-gray-400">
+              아직 참여 중인 모임이 없습니다. 새로운 모임을 찾아보세요!
+            </p>
+            <button
+              type="button"
+              onClick={onGoFind}
+              className="mt-4 rounded-xl bg-[#00FF87] px-4 py-2.5 text-sm font-bold text-black transition-transform active:scale-[0.98]"
+            >
+              모임 둘러보기
+            </button>
+          </Card>
+          <MyPageStatsBlock
+            completedHabits={completedHabits}
+            points={myStats.points}
+            rank={myStats.rank}
+            onOpenShop={() => setShowPointShop(true)}
+          />
+        </>
       )}
+
+      <PointShopModal
+        open={showPointShop}
+        points={myStats.points}
+        livesLeft={livesLeft}
+        hasSlotExpansion={extraGroupSlots > 0}
+        purchasing={purchasing}
+        onClose={() => !purchasing && setShowPointShop(false)}
+        onPurchaseHeart={() => void handlePurchaseHeart()}
+        onPurchaseSlot={() => void handlePurchaseSlot()}
+      />
 
       {/* 실시간 유저 랭킹 (1~10위) */}
       <section>
@@ -698,7 +1007,7 @@ export function MyTab({
                 {u.me && <span className="ml-1 text-[11px] text-gray-400">· 나</span>}
               </span>
               <span className="text-sm font-bold text-gray-300">
-                {u.points.toLocaleString()}
+                {(u.me ? userPoints : u.points).toLocaleString()}
                 <span className="ml-0.5 text-[11px] font-normal text-gray-500">P</span>
               </span>
             </div>

@@ -31,11 +31,17 @@ import { supabase } from "@/lib/supabase";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { Notice, Verification } from "@/lib/database.types";
 import {
+  fetchUserVerificationDays,
   fetchVerifications,
   uploadVerificationVideo,
   upsertVerification,
   verificationVideoUrl,
 } from "@/lib/verifications";
+import {
+  awardDailyVerificationPoints,
+  awardEmojiFeedbackPoints,
+  type PointAwardResult,
+} from "@/lib/points";
 import { Avatar, GroupThumb, Pill, StackedAvatars } from "./ui";
 import { groupThumbnailSrc } from "@/lib/categories";
 
@@ -147,14 +153,20 @@ function VerifyCaptionBadge({
   );
 }
 
+const CHEER_EMOJIS = ["🔥", "👏", "💪"] as const;
+
 function MemberVerifyCard({
   seat,
   challengeDay,
   onVerifyMe,
+  onCheer,
+  canCheer = false,
 }: {
   seat: Seat;
   challengeDay: number;
   onVerifyMe: () => void;
+  onCheer?: (emoji: string) => void;
+  canCheer?: boolean;
 }) {
   if (seat.empty) {
     return (
@@ -245,6 +257,22 @@ function MemberVerifyCard({
 
       {verified ? (
         <VerifyCaptionBadge day={challengeDay} comment={seat.comment} />
+      ) : null}
+
+      {verified && canCheer && onCheer ? (
+        <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center gap-1.5 px-2 pb-2">
+          {CHEER_EMOJIS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              aria-label={`${seat.name}에게 ${emoji} 응원`}
+              onClick={() => onCheer(emoji)}
+              className="rounded-full border border-white/10 bg-black/55 px-2 py-1 text-sm backdrop-blur-sm transition-transform hover:scale-110 active:scale-95"
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
       ) : null}
     </article>
   );
@@ -775,6 +803,7 @@ export function RoomDetail({
   requireAuth,
   autoOpenVerify = false,
   onAutoOpenVerifyHandled,
+  onPointsEarned,
 }: {
   group: Group;
   onBack: () => void;
@@ -790,6 +819,7 @@ export function RoomDetail({
   requireAuth?: () => boolean;
   autoOpenVerify?: boolean;
   onAutoOpenVerifyHandled?: () => void;
+  onPointsEarned?: (result: PointAwardResult) => void;
 }) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [dayRows, setDayRows] = useState<Verification[]>([]);
@@ -1072,6 +1102,23 @@ export function RoomDetail({
     shiftDay(dx < 0 ? 1 : -1);
   }
 
+  async function handleCheerMember(targetUserId: string) {
+    if (!userId || targetUserId === userId) return;
+    try {
+      const result = await awardEmojiFeedbackPoints(
+        userId,
+        group.id,
+        targetUserId,
+        challengeDay,
+      );
+      if (result) {
+        onPointsEarned?.(result);
+      }
+    } catch (error) {
+      console.error("emoji feedback points failed", error);
+    }
+  }
+
   async function handleConfirmCapture(payload: { blob: Blob; videoUrl: string; comment: string }) {
     if (!userId) {
       throw new Error("로그인이 필요합니다.");
@@ -1079,6 +1126,9 @@ export function RoomDetail({
     const comment = payload.comment.trim().slice(0, 20);
     setUploading(true);
     try {
+      const existingRows = await fetchVerifications(group.id, currentDay);
+      const isNewVerification = !existingRows.some((row) => row.user_id === userId);
+
       const uploaded = await uploadVerificationVideo({
         groupId: group.id,
         userId,
@@ -1098,6 +1148,20 @@ export function RoomDetail({
         );
         return [...next, saved];
       });
+
+      if (isNewVerification) {
+        const verifiedDays = await fetchUserVerificationDays(group.id, userId);
+        const allDays = [...new Set([...verifiedDays, currentDay])];
+        const award = await awardDailyVerificationPoints(
+          userId,
+          group.id,
+          currentDay,
+          allDays,
+        );
+        if (award.totalAwarded > 0) {
+          onPointsEarned?.(award);
+        }
+      }
     } catch (error) {
       throw error instanceof Error
         ? error
@@ -1320,6 +1384,14 @@ export function RoomDetail({
                   key={`${challengeDay}-${seat.id}`}
                   seat={seat}
                   challengeDay={challengeDay}
+                  canCheer={Boolean(
+                    viewingToday &&
+                      userId &&
+                      !seat.me &&
+                      !seat.empty &&
+                      (Boolean(seat.videoUrl) || Boolean(seat.verifiedAtLabel)),
+                  )}
+                  onCheer={() => void handleCheerMember(seat.id)}
                   onVerifyMe={() => {
                     if (!viewingToday) return;
                     if (requireAuth && !requireAuth()) return;

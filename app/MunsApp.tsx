@@ -6,7 +6,9 @@ import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, removeGroupMember } from "@/lib/groups";
+import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
+import { useUserPoints } from "./useUserPoints";
 import {
   getGroupOwnerId,
   isGroupMember,
@@ -154,6 +156,14 @@ export default function MunsApp() {
     clearSession,
   } = useNickname();
   const { notices, loading: noticesLoading, error: noticesError, refresh: refreshNotices, prependNotice, removeNotice } = useActiveNotices(userId, ready);
+  const {
+    snapshot: pointsSnapshot,
+    points: userPoints,
+    extraGroupSlots,
+    heartBonusByGroup,
+    applySnapshot: applyPointsSnapshot,
+    refresh: refreshPoints,
+  } = useUserPoints(userId);
 
   const [groupsRefreshing, setGroupsRefreshing] = useState(false);
   const refreshInFlightRef = useRef<Promise<Group[] | null> | null>(null);
@@ -393,6 +403,16 @@ export default function MunsApp() {
     if (!isLoggedIn() || !userId) return [];
     return listJoinedActiveGroups(visibleGroups, { userId, nickname }, joinedGroupIds);
   }, [visibleGroups, userId, nickname, joinedGroupIds, ready, hasNickname]);
+  const joinLimit = useMemo(
+    () => getEffectiveMaxJoinedGroups(pointsSnapshot),
+    [pointsSnapshot],
+  );
+
+  function handlePointsEarned(result: PointAwardResult) {
+    if (result.totalAwarded <= 0) return;
+    void refreshPoints();
+    setToast(result.messages.join(" · "));
+  }
   const visibleRoom = useMemo(() => {
     if (!room) return null;
     return overlayMyProfile([room], { userId, nickname, avatar: myProfileImage })[0] ?? room;
@@ -450,14 +470,14 @@ export default function MunsApp() {
   function tryOpenCreate() {
     if (!requireAuth({ type: "create" })) return;
     void (async () => {
-      if (myActiveGroups.length >= MAX_JOINED_GROUPS) {
+      if (myActiveGroups.length >= joinLimit) {
         setShowJoinLimit(true);
         return;
       }
       if (userId) {
         try {
           const memberships = await countUserMemberships(userId, nickname);
-          if (memberships >= MAX_JOINED_GROUPS) {
+          if (memberships >= joinLimit) {
             setShowJoinLimit(true);
             return;
           }
@@ -498,20 +518,20 @@ export default function MunsApp() {
     }
 
     const localJoinedCount = myActiveGroups.length;
-    if (!userId && localJoinedCount >= MAX_JOINED_GROUPS) {
+    if (!userId && localJoinedCount >= joinLimit) {
       setShowJoinLimit(true);
       return;
     }
     if (userId) {
       try {
         const memberships = await countUserMemberships(userId, nickname);
-        if (memberships >= MAX_JOINED_GROUPS) {
+        if (memberships >= joinLimit) {
           setShowJoinLimit(true);
           return;
         }
       } catch (error) {
         console.error("membership count failed", error);
-        if (localJoinedCount >= MAX_JOINED_GROUPS) {
+        if (localJoinedCount >= joinLimit) {
           setShowJoinLimit(true);
           return;
         }
@@ -602,14 +622,14 @@ export default function MunsApp() {
     }
     if (intent.type === "create") {
       pendingIntentRef.current = null;
-      if (myActiveGroups.length >= MAX_JOINED_GROUPS) {
+      if (myActiveGroups.length >= joinLimit) {
         setShowJoinLimit(true);
         return;
       }
       if (userId) {
         void countUserMemberships(userId, nickname)
           .then((memberships) => {
-            if (memberships >= MAX_JOINED_GROUPS) {
+            if (memberships >= joinLimit) {
               setShowJoinLimit(true);
               return;
             }
@@ -778,6 +798,12 @@ export default function MunsApp() {
                 setFilter("joinable");
                 setTab("find");
               }}
+              userPoints={userPoints}
+              extraGroupSlots={extraGroupSlots}
+              maxJoinedGroups={joinLimit}
+              heartBonusByGroup={heartBonusByGroup}
+              onPointsToast={setToast}
+              onPointsSnapshot={applyPointsSnapshot}
             />
           )}
         </main>
@@ -834,6 +860,7 @@ export default function MunsApp() {
               setToast("모임을 삭제했습니다");
               void refreshGroups();
             }}
+            onPointsEarned={handlePointsEarned}
           />
         )}
 
@@ -862,6 +889,7 @@ export default function MunsApp() {
           onCreate={handleCreate}
           onJoinLimit={() => setShowJoinLimit(true)}
           joinedCount={myActiveGroups.length}
+          maxJoinedGroups={joinLimit}
           onCreatedNotice={prependNotice}
           onNoticesRefresh={() => {
             void refreshNotices(true);

@@ -2,6 +2,7 @@ import {
   JOIN_LIMIT_MESSAGE,
   MAX_JOINED_GROUPS,
   isActiveChallengeGroup,
+  isCompletedGroupStatus,
   isEndedGroupStatus,
   isGroupMember,
   memberColor,
@@ -13,6 +14,7 @@ import {
 } from "@/app/data";
 import { getCategoryThumbnail } from "@/lib/categories";
 import { challengeDayNumber } from "@/lib/dates";
+import { getUserJoinLimit } from "@/lib/points";
 import { cacheBustAvatarUrl, pickMemberAvatarUrl } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
 import type { AppGroup, AppUser } from "@/lib/database.types";
@@ -412,6 +414,60 @@ export function applyUserProfileToGroups(
   }));
 }
 
+export async function fetchUserCompletedGroups(
+  userId: string,
+  nickname?: string | null,
+): Promise<Group[]> {
+  const membershipUserIds = await resolveMembershipUserIds(userId, nickname);
+  if (membershipUserIds.length === 0) return [];
+
+  const groupIds = new Set<string>();
+  const { data: memberRows, error: memberError } = await supabase
+    .from("group_members")
+    .select("group_id")
+    .in("user_id", membershipUserIds);
+
+  if (memberError) {
+    throw new Error(memberError.message || "완주 모임을 불러오지 못했습니다.");
+  }
+
+  for (const row of memberRows ?? []) {
+    const id = normalizeGroupId(row.group_id);
+    if (id) groupIds.add(id);
+  }
+
+  for (const membershipUserId of membershipUserIds) {
+    const ownerResult = await supabase
+      .from("groups")
+      .select("id")
+      .eq("owner_id", membershipUserId);
+    if (!ownerResult.error) {
+      for (const row of ownerResult.data ?? []) {
+        const id = normalizeGroupId(row.id);
+        if (id) groupIds.add(id);
+      }
+    }
+  }
+
+  if (groupIds.size === 0) return [];
+
+  const { data: groupRows, error: groupError } = await supabase
+    .from("groups")
+    .select("*")
+    .in("id", [...groupIds]);
+
+  if (groupError) {
+    throw new Error(groupError.message || "완주 모임을 불러오지 못했습니다.");
+  }
+
+  const completedRows = (groupRows ?? []).filter((row) =>
+    isCompletedGroupStatus(row.status),
+  );
+  if (completedRows.length === 0) return [];
+
+  return hydrateGroups(completedRows as AppGroup[]);
+}
+
 export async function fetchUserActiveGroupIds(
   userId: string,
   knownGroups: Group[] = [],
@@ -528,6 +584,14 @@ export async function countUserMemberships(
   return ids.length;
 }
 
+async function resolveJoinLimit(userId: string) {
+  try {
+    return await getUserJoinLimit(userId);
+  } catch {
+    return MAX_JOINED_GROUPS;
+  }
+}
+
 export async function addGroupMember(
   groupId: string,
   userId: string,
@@ -537,9 +601,10 @@ export async function addGroupMember(
   const joinedIds = new Set(
     await fetchUserActiveGroupIds(userId, [], profile?.nickname),
   );
+  const joinLimit = await resolveJoinLimit(userId);
   if (
     !joinedIds.has(normalizeGroupId(groupId)) &&
-    joinedIds.size >= MAX_JOINED_GROUPS
+    joinedIds.size >= joinLimit
   ) {
     throw new Error(JOIN_LIMIT_MESSAGE);
   }
