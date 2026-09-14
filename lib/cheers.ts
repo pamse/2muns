@@ -1,7 +1,17 @@
 import { normalizeGroupId } from "@/app/data";
 import { supabase } from "@/lib/supabase";
 
+/**
+ * 응원 데이터는 `public.verification_cheers` 테이블에 저장합니다.
+ * (마이그레이션: supabase/verification_cheers.sql)
+ *
+ * `verifications` 테이블에는 cheers_count / cheer_user_ids 컬럼이 없으며,
+ * reactions·verification_likes 등 다른 테이블 참조는 코드베이스에 없습니다.
+ */
+export const VERIFICATION_CHEERS_TABLE = "verification_cheers";
+
 const STORAGE_KEY = "muns:verification-cheers";
+const REMOTE_UNAVAILABLE_KEY = "muns:cheers-remote-unavailable";
 
 export type CheerSummary = {
   count: number;
@@ -10,6 +20,54 @@ export type CheerSummary = {
 };
 
 type CheersStore = Record<string, string[]>;
+
+function readRemoteUnavailableFlag(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(REMOTE_UNAVAILABLE_KEY) === "1";
+}
+
+function persistRemoteUnavailableFlag(unavailable: boolean) {
+  if (typeof window === "undefined") return;
+  if (unavailable) {
+    window.localStorage.setItem(REMOTE_UNAVAILABLE_KEY, "1");
+  } else {
+    window.localStorage.removeItem(REMOTE_UNAVAILABLE_KEY);
+  }
+}
+
+let remoteCheersKnownUnavailable = readRemoteUnavailableFlag();
+
+export function isVerificationCheersRemoteEnabled(): boolean {
+  return !remoteCheersKnownUnavailable;
+}
+
+function markRemoteCheersUnavailable(reason?: unknown) {
+  if (remoteCheersKnownUnavailable) return;
+  remoteCheersKnownUnavailable = true;
+  persistRemoteUnavailableFlag(true);
+  console.warn(
+    `[cheers] Supabase table public.${VERIFICATION_CHEERS_TABLE} is not available. ` +
+      "Using localStorage for this device. Apply supabase/verification_cheers.sql in the SQL Editor for cross-device sync.",
+    reason,
+  );
+}
+
+function markRemoteCheersAvailable() {
+  if (!remoteCheersKnownUnavailable) return;
+  remoteCheersKnownUnavailable = false;
+  persistRemoteUnavailableFlag(false);
+}
+
+export function isCheersSchemaMissingError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const record = error as { code?: string; message?: string; details?: string; hint?: string };
+  const blob = [record.message, record.details, record.hint].filter(Boolean).join(" ").toLowerCase();
+  if (record.code === "PGRST205" || record.code === "42P01") return true;
+  if (blob.includes("verification_cheers")) return true;
+  if (blob.includes("schema cache")) return true;
+  if (blob.includes("could not find the table")) return true;
+  return false;
+}
 
 function recordKey(groupId: string, day: number, targetUserId: string) {
   return `${normalizeGroupId(groupId)}:${day}:${normalizeGroupId(targetUserId)}`;
@@ -81,33 +139,46 @@ export async function fetchCheersForDay(
     result[targetUserId] = summarize(ids, viewerId);
   }
 
+  if (remoteCheersKnownUnavailable) {
+    return result;
+  }
+
   try {
     const { data, error } = await supabase
-      .from("verification_cheers")
+      .from(VERIFICATION_CHEERS_TABLE)
       .select("target_user_id, cheerer_user_id")
       .eq("group_id", groupId)
       .eq("day", day);
 
-    if (!error && data) {
-      const grouped = new Map<string, string[]>();
-      for (const row of data) {
-        const target = normalizeGroupId(row.target_user_id);
-        const cheerer = normalizeGroupId(row.cheerer_user_id);
-        if (!target || !cheerer) continue;
-        const list = grouped.get(target) ?? [];
-        list.push(cheerer);
-        grouped.set(target, list);
+    if (error) {
+      if (isCheersSchemaMissingError(error)) {
+        markRemoteCheersUnavailable(error);
       }
-
-      for (const [targetUserId, ids] of grouped.entries()) {
-        const key = recordKey(groupId, day, targetUserId);
-        store[key] = [...new Set(ids)];
-        result[targetUserId] = summarize(store[key], viewerId);
-      }
-      writeStore(store);
+      return result;
     }
-  } catch {
-    // Supabase 미적용 시 localStorage만 사용
+
+    markRemoteCheersAvailable();
+
+    const grouped = new Map<string, string[]>();
+    for (const row of data ?? []) {
+      const target = normalizeGroupId(row.target_user_id);
+      const cheerer = normalizeGroupId(row.cheerer_user_id);
+      if (!target || !cheerer) continue;
+      const list = grouped.get(target) ?? [];
+      list.push(cheerer);
+      grouped.set(target, list);
+    }
+
+    for (const [targetUserId, ids] of grouped.entries()) {
+      const key = recordKey(groupId, day, targetUserId);
+      store[key] = [...new Set(ids)];
+      result[targetUserId] = summarize(store[key], viewerId);
+    }
+    writeStore(store);
+  } catch (error) {
+    if (isCheersSchemaMissingError(error)) {
+      markRemoteCheersUnavailable(error);
+    }
   }
 
   return result;
@@ -118,8 +189,12 @@ async function syncCheerInsert(input: {
   day: number;
   targetUserId: string;
   cheererUserId: string;
-}) {
-  const { error } = await supabase.from("verification_cheers").upsert(
+}): Promise<boolean> {
+  if (remoteCheersKnownUnavailable) {
+    return false;
+  }
+
+  const { error } = await supabase.from(VERIFICATION_CHEERS_TABLE).upsert(
     {
       group_id: input.groupId,
       target_user_id: input.targetUserId,
@@ -128,9 +203,18 @@ async function syncCheerInsert(input: {
     },
     { onConflict: "group_id,target_user_id,cheerer_user_id,day" },
   );
-  if (error) {
-    throw new Error(error.message || "응원 저장에 실패했습니다.");
+
+  if (!error) {
+    markRemoteCheersAvailable();
+    return true;
   }
+
+  if (isCheersSchemaMissingError(error)) {
+    markRemoteCheersUnavailable(error);
+    return false;
+  }
+
+  throw new Error(error.message || "응원 저장에 실패했습니다.");
 }
 
 async function syncCheerDelete(input: {
@@ -138,31 +222,44 @@ async function syncCheerDelete(input: {
   day: number;
   targetUserId: string;
   cheererUserId: string;
-}) {
+}): Promise<boolean> {
+  if (remoteCheersKnownUnavailable) {
+    return false;
+  }
+
   const { error } = await supabase
-    .from("verification_cheers")
+    .from(VERIFICATION_CHEERS_TABLE)
     .delete()
     .eq("group_id", input.groupId)
     .eq("day", input.day)
     .eq("target_user_id", input.targetUserId)
     .eq("cheerer_user_id", input.cheererUserId);
-  if (error) {
-    throw new Error(error.message || "응원 취소에 실패했습니다.");
+
+  if (!error) {
+    markRemoteCheersAvailable();
+    return true;
   }
+
+  if (isCheersSchemaMissingError(error)) {
+    markRemoteCheersUnavailable(error);
+    return false;
+  }
+
+  throw new Error(error.message || "응원 취소에 실패했습니다.");
 }
 
+/** @returns true if Supabase에 반영됨, false면 이 기기 localStorage만 사용 */
 export async function persistCheerToggle(input: {
   groupId: string;
   day: number;
   targetUserId: string;
   cheererUserId: string;
   added: boolean;
-}) {
+}): Promise<boolean> {
   if (input.added) {
-    await syncCheerInsert(input);
-  } else {
-    await syncCheerDelete(input);
+    return syncCheerInsert(input);
   }
+  return syncCheerDelete(input);
 }
 
 export async function toggleVerificationCheer(input: {

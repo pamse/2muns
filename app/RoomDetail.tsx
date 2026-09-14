@@ -42,6 +42,7 @@ import {
 import {
   applyCheerToggleLocal,
   fetchCheersForDay,
+  isVerificationCheersRemoteEnabled,
   persistCheerToggle,
   type CheerSummary,
 } from "@/lib/cheers";
@@ -1214,7 +1215,7 @@ export function RoomDetail({
   }, [started, refreshCheerMap, dayRows]);
 
   useEffect(() => {
-    if (!started || !group.id) return;
+    if (!started || !group.id || !isVerificationCheersRemoteEnabled()) return;
     const channel = supabase
       .channel(`cheers-${group.id}-${challengeDay}`)
       .on(
