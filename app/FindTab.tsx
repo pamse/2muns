@@ -6,12 +6,14 @@ import { createPortal } from "react-dom";
 import { ChevronRight, Flame, Loader2, Lock, Plus, Users } from "lucide-react";
 import { PullToRefresh } from "./PullToRefresh";
 import {
+  FIND_TAB_CHIP_ORDER,
+  GROUP_FILTER_LABELS,
   isGroupMember,
   listJoinedActiveGroups,
-  listJoinedOngoingGroups,
   type Group,
   type GroupFilter,
 } from "./data";
+import { RunningGroupPeekSheet } from "./RunningGroupPeekSheet";
 import { groupThumbnailSrc } from "@/lib/categories";
 import { Card, GroupThumb, Pill, ProgressBar, StackedAvatars } from "./ui";
 
@@ -129,22 +131,26 @@ export function JoinLimitModal({
 function GroupCard({
   group,
   isMember,
+  peekMode = false,
   onOpen,
 }: {
   group: Group;
   isMember: boolean;
+  peekMode?: boolean;
   onOpen: (g: Group) => void;
 }) {
   const isJoinable = group.filter === "joinable";
   const full = group.members.length >= group.capacity;
-  const locked = !isJoinable && !isMember;
+  const locked = !isJoinable && !isMember && !peekMode;
   const actionLabel = isMember
     ? "입장하기"
     : isJoinable
       ? full
         ? "모집 마감"
         : "참여하기"
-      : null;
+      : peekMode
+        ? "규칙 엿보기"
+        : null;
   const actionMuted = Boolean(actionLabel === "모집 마감");
   return (
     <Card onClick={() => onOpen(group)} className="overflow-hidden p-4">
@@ -173,7 +179,7 @@ function GroupCard({
               </Pill>
             ) : (
               <Pill tone="warn">
-                <Flame size={12} /> D-{group.total - group.day} / {group.total}일
+                <Flame size={12} /> D-{group.total - group.day} 달리는 중
               </Pill>
             )}
             {full && <Pill tone="danger">정원 마감</Pill>}
@@ -221,6 +227,7 @@ export function FindTab({
   filter,
   onFilterChange,
   onOpenRoom,
+  onCreateFromRunningTemplate,
   myUserId,
   nickname,
   isLoggedIn = false,
@@ -234,6 +241,7 @@ export function FindTab({
   filter: GroupFilter;
   onFilterChange: (f: GroupFilter) => void;
   onOpenRoom: (g: Group) => void;
+  onCreateFromRunningTemplate?: (g: Group) => void;
   myUserId?: string | null;
   nickname?: string;
   isLoggedIn?: boolean;
@@ -242,6 +250,8 @@ export function FindTab({
   refreshing?: boolean;
   onRefresh?: () => void | Promise<unknown>;
 }) {
+  const [peekGroup, setPeekGroup] = useState<Group | null>(null);
+
   const mine = useMemo(() => {
     if (!isLoggedIn || !myUserId) return [];
     return listJoinedActiveGroups(
@@ -250,35 +260,45 @@ export function FindTab({
       joinedGroupIds,
     );
   }, [groups, joinedGroupIds, isLoggedIn, myUserId, nickname]);
-  const myOngoing = useMemo(() => {
-    if (!isLoggedIn || !myUserId) return [];
-    return listJoinedOngoingGroups(
-      groups,
-      { userId: myUserId, nickname },
-      joinedGroupIds,
-    );
-  }, [groups, joinedGroupIds, isLoggedIn, myUserId, nickname]);
+  const running = useMemo(
+    () => groups.filter((g) => g.filter === "ongoing"),
+    [groups],
+  );
   const joinable = useMemo(
     () => groups.filter((g) => g.filter === "joinable"),
     [groups],
   );
   const filtered =
-    filter === "mine"
-      ? mine
-      : filter === "ongoing"
-        ? myOngoing
-        : joinable;
+    filter === "mine" ? mine : filter === "ongoing" ? running : joinable;
   const counts = {
-    ongoing: myOngoing.length,
+    running: running.length,
     joinable: joinable.length,
     mine: mine.length,
   };
 
-  const chips: { key: GroupFilter; label: string; count: number }[] = [
-    { key: "ongoing", label: "진행 중인 모임", count: counts.ongoing },
-    { key: "joinable", label: "참여 가능한 모임", count: counts.joinable },
-    { key: "mine", label: "내 모임", count: counts.mine },
-  ];
+  const chipCounts: Record<GroupFilter, number> = {
+    joinable: counts.joinable,
+    ongoing: counts.running,
+    mine: counts.mine,
+  };
+  const chips = FIND_TAB_CHIP_ORDER.map((key) => ({
+    key,
+    label: GROUP_FILTER_LABELS[key],
+    count: chipCounts[key],
+  }));
+
+  function handleOpenGroup(g: Group) {
+    const member =
+      isLoggedIn &&
+      (mine.some((item) => item.id === g.id) ||
+        isGroupMember(g, { userId: myUserId, nickname }));
+
+    if (filter === "ongoing" && !member) {
+      setPeekGroup(g);
+      return;
+    }
+    onOpenRoom(g);
+  }
 
   return (
     <PullToRefresh refreshing={refreshing} onRefresh={onRefresh}>
@@ -336,7 +356,8 @@ export function FindTab({
               (mine.some((item) => item.id === g.id) ||
                 isGroupMember(g, { userId: myUserId, nickname }))
             }
-            onOpen={onOpenRoom}
+            peekMode={filter === "ongoing"}
+            onOpen={handleOpenGroup}
           />
         ))}
         {!loading && filtered.length === 0 && filter === "mine" && (
@@ -359,23 +380,29 @@ export function FindTab({
         )}
         {!loading && filtered.length === 0 && filter === "ongoing" && (
           <div className="rounded-2xl border border-dashed border-gray-800 bg-[#1B1D22] px-5 py-16 text-center">
-            {!isLoggedIn ? (
-              <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
-                {"로그인하면 진행 중인 내 모임을 확인할 수 있어요.\n마이페이지에서 닉네임을 설정해 주세요."}
-              </p>
-            ) : (
-              <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
-                {"진행 중인 모임이 없습니다.\n참여 가능한 모임에서 새 챌린지에 합류해 보세요!"}
-              </p>
-            )}
+            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-400">
+              {
+                "아직 달리는 중인 모임이 없어요.\n모집 중 탭에서 참여하거나 직접 모임을 열어 보세요!"
+              }
+            </p>
           </div>
         )}
         {!loading && filtered.length === 0 && filter === "joinable" && (
           <div className="py-20 text-center text-sm text-gray-500">
-            아직 모임이 없어요. <br /> 우측 하단 + 버튼으로 첫 모임을 만들어보세요!
+            아직 모집 중인 모임이 없어요. <br /> 우측 하단 + 버튼으로 첫 모임을 만들어보세요!
           </div>
         )}
       </div>
+
+      <RunningGroupPeekSheet
+        open={Boolean(peekGroup)}
+        group={peekGroup}
+        onClose={() => setPeekGroup(null)}
+        onCreateFromRules={(g) => {
+          setPeekGroup(null);
+          onCreateFromRunningTemplate?.(g);
+        }}
+      />
     </PullToRefresh>
   );
 }

@@ -10,6 +10,54 @@ import { countUserMemberships } from "@/lib/groups";
 import { getCategoryThumbnail } from "@/lib/categories";
 import { BottomSheet } from "./ui";
 
+export type CreateGroupPrefill = {
+  intro?: string;
+  category?: string;
+  verifyAnytime?: boolean;
+  verifyStart?: number;
+  verifyEnd?: number;
+};
+
+const DEFAULT_VERIFY_START = 5;
+const DEFAULT_VERIFY_END = 9;
+
+export function groupToCreatePrefill(group: {
+  intro?: string;
+  category?: string;
+  verifyAnytime?: boolean;
+  verifyStartHour?: number;
+  verifyEndHour?: number;
+}): CreateGroupPrefill {
+  const category = group.category?.trim() ?? "";
+  const matched =
+    GROUP_CATEGORIES.find((item) => item === category) ??
+    (category.includes("기타") ? "기타 습관 (자유 습관)" : "");
+
+  return {
+    intro: group.intro?.trim() ?? "",
+    category: matched,
+    verifyAnytime: group.verifyAnytime ?? false,
+    verifyStart: group.verifyStartHour ?? DEFAULT_VERIFY_START,
+    verifyEnd: group.verifyEndHour ?? DEFAULT_VERIFY_END,
+  };
+}
+
+function resetCreateForm(setters: {
+  setName: (v: string) => void;
+  setIntro: (v: string) => void;
+  setCategory: (v: string) => void;
+  setVerifyAnytime: (v: boolean) => void;
+  setVerifyStart: (v: number) => void;
+  setVerifyEnd: (v: number) => void;
+}) {
+  setters.setName("");
+  setters.setIntro("");
+  setters.setCategory("");
+  setters.setVerifyAnytime(false);
+  setters.setVerifyStart(DEFAULT_VERIFY_START);
+  setters.setVerifyEnd(DEFAULT_VERIFY_END);
+}
+
 export const GROUP_CATEGORIES = [
   "운동/헬스",
   "미라클모닝",
@@ -402,9 +450,11 @@ export function CreateGroupSheet({
   ownerId = "me",
   ownerName = "나",
   ownerAvatar = ME_AVATAR,
+  prefill = null,
 }: {
   open: boolean;
   onClose: () => void;
+  prefill?: CreateGroupPrefill | null;
   onCreate: (g: Group) => void;
   onJoinLimit?: () => void;
   joinedCount?: number;
@@ -419,9 +469,30 @@ export function CreateGroupSheet({
   const [intro, setIntro] = useState("");
   const [category, setCategory] = useState("");
   const [verifyAnytime, setVerifyAnytime] = useState(false);
-  const [verifyStart, setVerifyStart] = useState(5);
-  const [verifyEnd, setVerifyEnd] = useState(9);
+  const [verifyStart, setVerifyStart] = useState(DEFAULT_VERIFY_START);
+  const [verifyEnd, setVerifyEnd] = useState(DEFAULT_VERIFY_END);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    if (prefill) {
+      setName("");
+      setIntro(prefill.intro ?? "");
+      setCategory(prefill.category ?? "");
+      setVerifyAnytime(prefill.verifyAnytime ?? false);
+      setVerifyStart(prefill.verifyStart ?? DEFAULT_VERIFY_START);
+      setVerifyEnd(prefill.verifyEnd ?? DEFAULT_VERIFY_END);
+      return;
+    }
+    resetCreateForm({
+      setName,
+      setIntro,
+      setCategory,
+      setVerifyAnytime,
+      setVerifyStart,
+      setVerifyEnd,
+    });
+  }, [open, prefill]);
 
   const canSubmit =
     name.trim().length > 0 && intro.trim().length > 0 && category.length > 0 && !saving;
@@ -556,12 +627,14 @@ export function CreateGroupSheet({
       verifyEndHour: verifyEnd,
     };
     onCreate(newGroup);
-    setName("");
-    setIntro("");
-    setCategory("");
-    setVerifyAnytime(false);
-    setVerifyStart(5);
-    setVerifyEnd(9);
+    resetCreateForm({
+      setName,
+      setIntro,
+      setCategory,
+      setVerifyAnytime,
+      setVerifyStart,
+      setVerifyEnd,
+    });
     setSaving(false);
     onClose();
   }

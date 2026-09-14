@@ -26,7 +26,11 @@ import {
   type TabKey,
 } from "./data";
 import { BottomNav } from "./BottomNav";
-import { CreateGroupSheet } from "./CreateGroupSheet";
+import {
+  CreateGroupSheet,
+  groupToCreatePrefill,
+  type CreateGroupPrefill,
+} from "./CreateGroupSheet";
 import { FindTab, EntryDeniedModal, JoinLimitModal } from "./FindTab";
 import { InfoTab } from "./InfoTab";
 import { LoginGateModal } from "./LoginGateModal";
@@ -136,6 +140,7 @@ export default function MunsApp() {
   // 오버레이/모달 상태
   const [room, setRoom] = useState<Group | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [createPrefill, setCreatePrefill] = useState<CreateGroupPrefill | null>(null);
   const [showNotices, setShowNotices] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showMunsyWelcome, setShowMunsyWelcome] = useState(false);
@@ -554,7 +559,7 @@ export default function MunsApp() {
     void refreshGroups();
   }
 
-  function tryOpenCreate() {
+  function openCreateSheet(prefill: CreateGroupPrefill | null = null) {
     if (!requireAuth({ type: "create" })) return;
     void (async () => {
       if (myActiveGroups.length >= joinLimit) {
@@ -572,8 +577,17 @@ export default function MunsApp() {
           console.error("membership count failed", error);
         }
       }
+      setCreatePrefill(prefill);
       setShowCreate(true);
     })();
+  }
+
+  function tryOpenCreate() {
+    openCreateSheet(null);
+  }
+
+  function handleCreateFromRunningTemplate(g: Group) {
+    openCreateSheet(groupToCreatePrefill(g));
   }
 
   async function openRoom(g: Group) {
@@ -835,6 +849,7 @@ export default function MunsApp() {
               filter={filter}
               onFilterChange={setFilter}
               onOpenRoom={handleOpenRoom}
+              onCreateFromRunningTemplate={handleCreateFromRunningTemplate}
               myUserId={userId}
               nickname={nickname}
               isLoggedIn={isLoggedIn()}
@@ -997,7 +1012,11 @@ export default function MunsApp() {
 
         <CreateGroupSheet
           open={showCreate}
-          onClose={() => setShowCreate(false)}
+          prefill={createPrefill}
+          onClose={() => {
+            setShowCreate(false);
+            setCreatePrefill(null);
+          }}
           onCreate={handleCreate}
           onJoinLimit={() => setShowJoinLimit(true)}
           joinedCount={myActiveGroups.length}

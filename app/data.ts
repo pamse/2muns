@@ -5,6 +5,16 @@ export type TabKey = "info" | "find" | "my";
 export type GroupStatus = "ongoing" | "joinable";
 export type GroupFilter = GroupStatus | "mine";
 
+/** 모임찾기 상단 탭 칩 라벨 (`GroupFilter` state와 동일 키) */
+export const GROUP_FILTER_LABELS: Record<GroupFilter, string> = {
+  joinable: "모집 중",
+  ongoing: "달리는 중",
+  mine: "내 모임",
+};
+
+/** 모임찾기 탭 표시 순서 (기본 선택: joinable → 모집 중) */
+export const FIND_TAB_CHIP_ORDER: GroupFilter[] = ["joinable", "ongoing", "mine"];
+
 /** 참여자(멤버) */
 export type Member = {
   id: string;
@@ -25,7 +35,7 @@ export type Group = {
   total: number; // 챌린지 총 일수 (66일 고정)
   capacity: number; // 최대 정원 (6명 고정)
   members: Member[]; // 현재 참여 멤버
-  filter: GroupStatus; // 진행 중 / 참여 가능
+  filter: GroupStatus; // 달리는 중(ongoing) / 모집 중(joinable)
   /** 개설자(방장) 유저 id */
   ownerId?: string;
   /** DB `groups.created_by`가 있으면 사용. 없으면 ownerId와 동일 */
