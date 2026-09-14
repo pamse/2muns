@@ -1,7 +1,14 @@
 // 2müns — 'MY' 탭: 참여 모임 관리 / 실천율 / 출석 현황 / 포인트 & 랭킹
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -35,6 +42,7 @@ import {
 import { fetchUserCompletedGroups } from "@/lib/groups";
 import { AttendanceStrip, ATTENDANCE_LIVES } from "./AttendanceStrip";
 import { MunsyProgressCard } from "./MunsyProgressCard";
+import { PullToRefresh } from "./PullToRefresh";
 import { Avatar, BottomSheet, Card, Pill } from "./ui";
 import { WeeklyShortsModal } from "./WeeklyShortsModal";
 import {
@@ -628,6 +636,7 @@ export function MyTab({
   heartBonusByGroup = {},
   onPointsToast,
   onPointsSnapshot,
+  onRefreshPoints,
 }: {
   onGoFind: () => void;
   onOpenRoom: (group: Group) => void;
@@ -650,6 +659,7 @@ export function MyTab({
   heartBonusByGroup?: Record<string, number>;
   onPointsToast?: (message: string) => void;
   onPointsSnapshot?: (snapshot: UserPointsSnapshot) => void;
+  onRefreshPoints?: () => Promise<UserPointsSnapshot | void>;
 }) {
   const joinedGroups = useMemo(
     () =>
@@ -689,6 +699,7 @@ export function MyTab({
     topFive: RankUser[];
     rank: number | null;
   }>({ topFive: [], rank: null });
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (myGroups.length === 0) {
@@ -767,24 +778,21 @@ export function MyTab({
   );
   const canAdd = myGroups.length < maxJoinedGroups;
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadRanking() {
+  const loadRanking = useCallback(
+    async (points = userPoints) => {
       const next = await fetchLiveRanking({
         userId: myUserId,
-        points: userPoints,
+        points,
       });
-      if (!cancelled) {
-        setLiveRanking(next);
-      }
-    }
+      setLiveRanking(next);
+      return next;
+    },
+    [myUserId, userPoints],
+  );
 
+  useEffect(() => {
     void loadRanking();
-    return () => {
-      cancelled = true;
-    };
-  }, [myUserId, userPoints]);
+  }, [loadRanking]);
 
   useEffect(() => {
     if (!myUserId) return;
@@ -799,6 +807,46 @@ export function MyTab({
     window.addEventListener(POINTS_UPDATED_EVENT, onPointsUpdated);
     return () => window.removeEventListener(POINTS_UPDATED_EVENT, onPointsUpdated);
   }, [myUserId, userPoints]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const snapshot = await onRefreshPoints?.();
+      const points = snapshot?.points ?? userPoints;
+
+      const tasks: Promise<unknown>[] = [loadRanking(points)];
+
+      if (myUserId) {
+        tasks.push(
+          fetchUserCompletedGroups(myUserId, nickname).then((rows) => {
+            setFetchedCompletedGroups(rows);
+          }),
+        );
+      }
+
+      if (selected?.id && started && myUserId) {
+        tasks.push(
+          fetchUserVerificationDays(selected.id, myUserId).then((days) => {
+            setVerifiedState({ groupId: selected.id, days });
+          }),
+        );
+      }
+
+      await Promise.all(tasks);
+    } catch (error) {
+      console.error("my tab refresh failed", error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [
+    loadRanking,
+    myUserId,
+    nickname,
+    onRefreshPoints,
+    selected?.id,
+    started,
+    userPoints,
+  ]);
 
   const myStats = useMemo(
     () => ({
@@ -955,7 +1003,11 @@ export function MyTab({
   }
 
   return (
-    <div className="space-y-5 px-4 pb-28 pt-4">
+    <PullToRefresh
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      className="space-y-5 px-4 pb-28 pt-4"
+    >
       {/* 프로필 헤더 */}
       <div className="flex items-center gap-3">
         <ProfilePhotoButton
@@ -1304,6 +1356,6 @@ export function MyTab({
         onClose={() => !quitting && setShowQuit(false)}
         onConfirm={() => void handleQuit()}
       />
-    </div>
+    </PullToRefresh>
   );
 }

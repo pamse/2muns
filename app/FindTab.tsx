@@ -1,9 +1,10 @@
 // 2müns — '모임찾기' 탭 (메인 홈): 필터 + 모임 카드 리스트
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight, Flame, Loader2, Lock, Plus, Users } from "lucide-react";
+import { PullToRefresh } from "./PullToRefresh";
 import {
   isGroupMember,
   listJoinedActiveGroups,
@@ -125,42 +126,6 @@ export function JoinLimitModal({
   );
 }
 
-const PULL_THRESHOLD = 64;
-const PULL_MAX = 96;
-const PULL_REST = 56;
-
-function findScrollParent(el: HTMLElement) {
-  let node: HTMLElement | null = el.parentElement;
-  while (node) {
-    const { overflowY } = window.getComputedStyle(node);
-    if (overflowY === "auto" || overflowY === "scroll") return node;
-    node = node.parentElement;
-  }
-  return (document.scrollingElement as HTMLElement | null) ?? null;
-}
-
-function dampenPull(distance: number) {
-  const x = Math.max(0, distance);
-  return Math.min(PULL_MAX, (1 - Math.exp(-x / 78)) * PULL_MAX);
-}
-
-function PullSpinner({ spinning, progress }: { spinning: boolean; progress: number }) {
-  const rotation = spinning ? undefined : Math.min(1, progress) * 270;
-  return (
-    <span
-      className={`block h-[22px] w-[22px] rounded-full border-[2.5px] border-[#00E575]/20 border-t-[#00E575] ${
-        spinning ? "animate-spin" : ""
-      }`}
-      style={
-        spinning
-          ? undefined
-          : { transform: `rotate(${rotation}deg)` }
-      }
-      aria-hidden
-    />
-  );
-}
-
 function GroupCard({
   group,
   isMember,
@@ -277,116 +242,6 @@ export function FindTab({
   refreshing?: boolean;
   onRefresh?: () => void | Promise<unknown>;
 }) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const startYRef = useRef<number | null>(null);
-  const startXRef = useRef(0);
-  const pullingRef = useRef(false);
-  const pullYRef = useRef(0);
-  const refreshingRef = useRef(refreshing);
-  const onRefreshRef = useRef(onRefresh);
-  const [pullY, setPullY] = useState(0);
-  const [settling, setSettling] = useState(false);
-
-  refreshingRef.current = refreshing;
-  onRefreshRef.current = onRefresh;
-
-  useEffect(() => {
-    pullYRef.current = pullY;
-  }, [pullY]);
-
-  useEffect(() => {
-    if (refreshing) return;
-    if (pullYRef.current <= 0) return;
-    setSettling(true);
-    setPullY(0);
-  }, [refreshing]);
-
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root || !onRefresh) return;
-    const scroller = findScrollParent(root);
-    if (!scroller) return;
-
-    const prevOverscroll = scroller.style.overscrollBehaviorY;
-    scroller.style.overscrollBehaviorY = "contain";
-
-    const setPull = (value: number) => {
-      pullYRef.current = value;
-      setPullY(value);
-    };
-
-    const onTouchStart = (event: TouchEvent) => {
-      if (refreshingRef.current) return;
-      if (scroller.scrollTop > 0) {
-        startYRef.current = null;
-        pullingRef.current = false;
-        return;
-      }
-      startYRef.current = event.touches[0].clientY;
-      startXRef.current = event.touches[0].clientX;
-      pullingRef.current = false;
-      setSettling(false);
-    };
-
-    const onTouchMove = (event: TouchEvent) => {
-      if (startYRef.current == null || refreshingRef.current) return;
-      if (scroller.scrollTop > 0 && !pullingRef.current) {
-        startYRef.current = null;
-        setPull(0);
-        return;
-      }
-
-      const touch = event.touches[0];
-      const dy = touch.clientY - startYRef.current;
-      const dx = touch.clientX - startXRef.current;
-
-      if (!pullingRef.current) {
-        if (dy < 8) return;
-        if (Math.abs(dx) > dy) {
-          startYRef.current = null;
-          return;
-        }
-        pullingRef.current = true;
-      }
-
-      if (dy <= 0) {
-        pullingRef.current = false;
-        setPull(0);
-        return;
-      }
-
-      event.preventDefault();
-      setPull(dampenPull(dy));
-    };
-
-    const onTouchEnd = () => {
-      if (startYRef.current == null) return;
-      startYRef.current = null;
-      pullingRef.current = false;
-      if (pullYRef.current >= PULL_THRESHOLD) {
-        setSettling(true);
-        setPull(PULL_REST);
-        void onRefreshRef.current?.();
-        return;
-      }
-      setSettling(true);
-      setPull(0);
-    };
-
-    scroller.addEventListener("touchstart", onTouchStart, { passive: true });
-    scroller.addEventListener("touchmove", onTouchMove, { passive: false });
-    scroller.addEventListener("touchend", onTouchEnd);
-    scroller.addEventListener("touchcancel", onTouchEnd);
-
-    return () => {
-      scroller.style.overscrollBehaviorY = prevOverscroll;
-      scroller.removeEventListener("touchstart", onTouchStart);
-      scroller.removeEventListener("touchmove", onTouchMove);
-      scroller.removeEventListener("touchend", onTouchEnd);
-      scroller.removeEventListener("touchcancel", onTouchEnd);
-    };
-  }, []);
-
   const mine = useMemo(() => {
     if (!isLoggedIn || !myUserId) return [];
     return listJoinedActiveGroups(
@@ -425,28 +280,8 @@ export function FindTab({
     { key: "mine", label: "내 모임", count: counts.mine },
   ];
 
-  const pullHeight = refreshing ? Math.max(pullY, PULL_REST) : pullY;
-  const pullProgress = pullHeight / PULL_THRESHOLD;
-  const spinning = refreshing || pullHeight >= PULL_THRESHOLD;
-
   return (
-    <div ref={rootRef}>
-      <div
-        className={`flex items-center justify-center overflow-hidden ${
-          settling || refreshing ? "transition-[height] duration-300 ease-out" : ""
-        }`}
-        style={{ height: pullHeight }}
-        aria-hidden={pullHeight <= 0}
-        aria-live="polite"
-        onTransitionEnd={() => {
-          if (!refreshing && pullHeight <= 0) setSettling(false);
-        }}
-      >
-        {pullHeight > 0 ? (
-          <PullSpinner spinning={spinning} progress={pullProgress} />
-        ) : null}
-      </div>
-
+    <PullToRefresh refreshing={refreshing} onRefresh={onRefresh}>
       <div className="sticky top-0 z-20 bg-[#121316]/95 py-3 backdrop-blur">
         <div className="no-scrollbar overflow-x-auto">
           <div className="flex w-max gap-2 py-0.5 pl-4 pr-4">
@@ -541,6 +376,6 @@ export function FindTab({
           </div>
         )}
       </div>
-    </div>
+    </PullToRefresh>
   );
 }

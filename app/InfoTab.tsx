@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { PullToRefresh } from "./PullToRefresh";
 import { supabase } from "@/lib/supabase";
 import { isArticleNew, type Article } from "@/lib/articles";
 
@@ -202,45 +203,53 @@ function ArticleCard({
 export function InfoTab() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchArticles() {
+  const loadArticles = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) {
       setLoading(true);
-      setError(null);
+    }
+    setError(null);
 
-      const { data, error: fetchError } = await supabase
-        .from("articles")
-        .select("*")
-        .order("order_num", { ascending: true });
+    const { data, error: fetchError } = await supabase
+      .from("articles")
+      .select("*")
+      .order("order_num", { ascending: true });
 
-      if (cancelled) {
-        return;
-      }
-
-      if (fetchError) {
-        console.error("articles select failed", fetchError);
-        setError(formatSupabaseError(fetchError));
-        setArticles([]);
-      } else {
-        setArticles(data ?? []);
-      }
-
-      setLoading(false);
+    if (fetchError) {
+      console.error("articles select failed", fetchError);
+      setError(formatSupabaseError(fetchError));
+      setArticles([]);
+    } else {
+      setArticles(data ?? []);
     }
 
-    void fetchArticles();
-
-    return () => {
-      cancelled = true;
-    };
+    if (!options?.silent) {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    void loadArticles();
+  }, [loadArticles]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadArticles({ silent: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadArticles]);
+
   return (
-    <div className="flex flex-col gap-3 px-4 pb-28 pt-4">
+    <PullToRefresh
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      className="flex flex-col gap-3 px-4 pb-28 pt-4"
+    >
       {error ? (
         <p
           role="alert"
@@ -279,6 +288,6 @@ export function InfoTab() {
           onClose={() => setSelectedArticle(null)}
         />
       ) : null}
-    </div>
+    </PullToRefresh>
   );
 }

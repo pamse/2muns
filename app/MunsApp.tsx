@@ -845,6 +845,7 @@ export default function MunsApp() {
               heartBonusByGroup={heartBonusByGroup}
               onPointsToast={setToast}
               onPointsSnapshot={applyPointsSnapshot}
+              onRefreshPoints={refreshPoints}
             />
           )}
         </main>
