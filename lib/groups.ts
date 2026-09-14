@@ -13,7 +13,10 @@ import {
   type Member,
 } from "@/app/data";
 import { getCategoryThumbnail } from "@/lib/categories";
-import { GROUP_STATUS_RECRUITING_SOLO } from "@/lib/groupRecruiting";
+import {
+  GROUP_STATUS_RECRUITING_SOLO,
+  shouldListInJoinableTab,
+} from "@/lib/groupRecruiting";
 import { challengeDayNumber } from "@/lib/dates";
 import { getUserJoinLimit } from "@/lib/points";
 import { cacheBustAvatarUrl, pickMemberAvatarUrl } from "@/lib/profile";
@@ -137,12 +140,20 @@ function groupCreatorId(row: AppGroup) {
   return extra.owner_id || extra.created_by || null;
 }
 
-function mapStatus(status: string | null | undefined, startedAt?: string | null): { filter: GroupStatus; raceStatus: Group["raceStatus"] } {
-  const value = (status || "").trim().toLowerCase();
-  if (value === GROUP_STATUS_RECRUITING_SOLO) {
-    return { filter: "joinable", raceStatus: "started" };
+function mapStatus(
+  status: string | null | undefined,
+  startedAt: string | null | undefined,
+  memberCount: number,
+): { filter: GroupStatus; raceStatus: Group["raceStatus"] } {
+  if (shouldListInJoinableTab({ dbStatus: status, startedAt, memberCount })) {
+    return {
+      filter: "joinable",
+      raceStatus: startedAt ? "started" : "recruiting",
+    };
   }
-  if (value === "recruiting") {
+
+  const value = (status || "").trim().toLowerCase();
+  if (value === GROUP_STATUS_RECRUITING_SOLO || value === "recruiting") {
     return {
       filter: "joinable",
       raceStatus: startedAt ? "started" : "recruiting",
@@ -155,7 +166,8 @@ function mapStatus(status: string | null | undefined, startedAt?: string | null)
 }
 
 export function mapAppGroup(row: AppGroup, members: Member[]): Group {
-  const { filter, raceStatus } = mapStatus(row.status, row.started_at);
+  const memberCount = members.length;
+  const { filter, raceStatus } = mapStatus(row.status, row.started_at, memberCount);
   const creatorId = groupCreatorId(row);
   return {
     id: row.id,
@@ -661,7 +673,10 @@ export async function addGroupMember(
       .eq("id", groupId)
       .maybeSingle();
     const status = (groupRow?.status ?? "").trim().toLowerCase();
-    if (status === GROUP_STATUS_RECRUITING_SOLO && groupRow?.started_at) {
+    if (
+      (status === "recruiting" || status === GROUP_STATUS_RECRUITING_SOLO) &&
+      groupRow?.started_at
+    ) {
       const { error: resumeError } = await supabase
         .from("groups")
         .update({ status: "started" })
@@ -789,15 +804,20 @@ export async function quitChallengeGroup(options: {
     groupPatch.owner_id = newOwnerId;
   }
   if (soloRecruit) {
-    groupPatch.status = wasRacing ? GROUP_STATUS_RECRUITING_SOLO : "recruiting";
+    groupPatch.status = "recruiting";
   }
 
-  const { error: updateError } = await supabase
+  const { data: updatedGroup, error: updateError } = await supabase
     .from("groups")
     .update(groupPatch)
-    .eq("id", groupId);
+    .eq("id", groupId)
+    .select("id, status, owner_id, current_count, started_at")
+    .maybeSingle();
   if (updateError) {
     throw new Error(updateError.message || "모임 상태 갱신에 실패했습니다.");
+  }
+  if (!updatedGroup?.id) {
+    throw new Error("모임 상태가 반영되지 않았습니다.");
   }
 
   const { error: leaveError } = await supabase

@@ -6,7 +6,7 @@ import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup } from "@/lib/groups";
-import { canGuestJoinGroup, GROUP_STATUS_RECRUITING_SOLO } from "@/lib/groupRecruiting";
+import { canGuestJoinGroup } from "@/lib/groupRecruiting";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { withdrawUserAccount } from "@/lib/account";
 import { ensurePublicUserFromAuth } from "@/lib/authUser";
@@ -650,7 +650,7 @@ export default function MunsApp() {
             createdBy: result.newOwnerId,
           };
           if (result.soloRecruit) {
-            next.dbStatus = GROUP_STATUS_RECRUITING_SOLO;
+            next.dbStatus = "recruiting";
             next.filter = "joinable";
             next.raceStatus = item.startedAt ? "started" : "recruiting";
           }
