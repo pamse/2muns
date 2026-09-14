@@ -874,7 +874,7 @@ function WaitingLobby({
               onClick={onDelete}
               className="cursor-pointer py-2 text-xs text-zinc-500 underline transition-colors hover:text-rose-400"
             >
-              모임 삭제
+              챌린지 포기하기
             </button>
           </div>
         </div>
@@ -1501,11 +1501,12 @@ export function RoomDetail({
     if (busy || !owner) return;
     setBusy(true);
     setConfirmAction(null);
-    onDeleteGroup?.(group.id);
     try {
-      await supabase.from("groups").delete().eq("id", group.id);
+      onDeleteGroup?.(group.id);
     } catch (error) {
-      console.error("groups delete failed", error);
+      console.error("owner quit failed", error);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1620,13 +1621,15 @@ export function RoomDetail({
 
       <LobbyConfirmModal
         open={confirmAction !== null}
-        title={confirmAction === "delete" ? "모임 삭제" : "참여 취소"}
+        title={confirmAction === "delete" ? "챌린지 포기" : "참여 취소"}
         message={
           confirmAction === "delete"
-            ? "정말 모임을 삭제하시겠습니까?"
+            ? group.members.length <= 1
+              ? "혼자 남은 모임입니다. 포기하면 모임이 삭제됩니다."
+              : "포기하면 방장 권한이 다음 멤버에게 넘어가고, 24시간 추가 모집이 시작됩니다."
             : "정말 모임 참여를 취소하시겠습니까?"
         }
-        confirmLabel={confirmAction === "delete" ? "삭제" : "참여 취소"}
+        confirmLabel={confirmAction === "delete" ? "포기하기" : "참여 취소"}
         onClose={() => {
           if (!busy) setConfirmAction(null);
         }}

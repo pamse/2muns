@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronRight, Flame, Loader2, Lock, Plus, Users } from "lucide-react";
+import { ChevronRight, Flame, Loader2, Lock, Plus, Users, Zap } from "lucide-react";
 import { PullToRefresh } from "./PullToRefresh";
 import {
   FIND_TAB_CHIP_ORDER,
@@ -13,6 +13,8 @@ import {
   type Group,
   type GroupFilter,
 } from "./data";
+import { formatRecruitingTimeLeft, isMidRaceJoinOpen } from "@/lib/groupRecruiting";
+import { MidRaceJoinSheet } from "./MidRaceJoinSheet";
 import { RunningGroupPeekSheet } from "./RunningGroupPeekSheet";
 import { groupThumbnailSrc } from "@/lib/categories";
 import { Card, GroupThumb, Pill, ProgressBar, StackedAvatars } from "./ui";
@@ -132,25 +134,34 @@ function GroupCard({
   group,
   isMember,
   peekMode = false,
+  midRaceJoin = false,
   onOpen,
 }: {
   group: Group;
   isMember: boolean;
   peekMode?: boolean;
+  midRaceJoin?: boolean;
   onOpen: (g: Group) => void;
 }) {
-  const isJoinable = group.filter === "joinable";
+  const isJoinable = group.filter === "joinable" || midRaceJoin;
   const full = group.members.length >= group.capacity;
-  const locked = !isJoinable && !isMember && !peekMode;
+  const locked = !isJoinable && !isMember && !peekMode && !midRaceJoin;
+  const recruitingLeft = midRaceJoin
+    ? formatRecruitingTimeLeft(group.additionalRecruitingUntil)
+    : null;
   const actionLabel = isMember
     ? "입장하기"
-    : isJoinable
+    : midRaceJoin
       ? full
         ? "모집 마감"
-        : "참여하기"
-      : peekMode
-        ? "규칙 엿보기"
-        : null;
+        : "합류하기"
+      : isJoinable
+        ? full
+          ? "모집 마감"
+          : "참여하기"
+        : peekMode
+          ? "규칙 엿보기"
+          : null;
   const actionMuted = Boolean(actionLabel === "모집 마감");
   return (
     <Card onClick={() => onOpen(group)} className="overflow-hidden p-4">
@@ -173,7 +184,11 @@ function GroupCard({
             {isMember ? (
               <Pill tone="accent">참여 중</Pill>
             ) : null}
-            {isJoinable ? (
+            {midRaceJoin ? (
+              <Pill tone="accent">
+                <Zap size={12} /> 24시간 번개 탑승
+              </Pill>
+            ) : isJoinable ? (
               <Pill tone="accent">
                 <Users size={12} /> 모집 중
               </Pill>
@@ -182,12 +197,15 @@ function GroupCard({
                 <Flame size={12} /> D-{group.total - group.day} 달리는 중
               </Pill>
             )}
+            {recruitingLeft ? (
+              <Pill tone="warn">⏳ {recruitingLeft} 남음</Pill>
+            ) : null}
             {full && <Pill tone="danger">정원 마감</Pill>}
           </div>
         </div>
       </div>
 
-      {!isJoinable && (
+      {!isJoinable && (midRaceJoin || group.filter === "ongoing") && (
         <div className="mt-3">
           <div className="mb-1 flex justify-between text-[11px] text-gray-500">
             <span>{group.day}일차 진행 중</span>
@@ -228,6 +246,7 @@ export function FindTab({
   onFilterChange,
   onOpenRoom,
   onCreateFromRunningTemplate,
+  onJoinMidRace,
   myUserId,
   nickname,
   isLoggedIn = false,
@@ -242,6 +261,7 @@ export function FindTab({
   onFilterChange: (f: GroupFilter) => void;
   onOpenRoom: (g: Group) => void;
   onCreateFromRunningTemplate?: (g: Group) => void;
+  onJoinMidRace?: (g: Group) => void | Promise<void>;
   myUserId?: string | null;
   nickname?: string;
   isLoggedIn?: boolean;
@@ -251,6 +271,8 @@ export function FindTab({
   onRefresh?: () => void | Promise<unknown>;
 }) {
   const [peekGroup, setPeekGroup] = useState<Group | null>(null);
+  const [midRaceJoinGroup, setMidRaceJoinGroup] = useState<Group | null>(null);
+  const [midRaceJoining, setMidRaceJoining] = useState(false);
 
   const mine = useMemo(() => {
     if (!isLoggedIn || !myUserId) return [];
@@ -265,7 +287,8 @@ export function FindTab({
     [groups],
   );
   const joinable = useMemo(
-    () => groups.filter((g) => g.filter === "joinable"),
+    () =>
+      groups.filter((g) => g.filter === "joinable" || isMidRaceJoinOpen(g)),
     [groups],
   );
   const filtered =
@@ -294,7 +317,15 @@ export function FindTab({
         isGroupMember(g, { userId: myUserId, nickname }));
 
     if (filter === "ongoing" && !member) {
+      if (isMidRaceJoinOpen(g)) {
+        setMidRaceJoinGroup(g);
+        return;
+      }
       setPeekGroup(g);
+      return;
+    }
+    if (filter === "joinable" && !member && isMidRaceJoinOpen(g)) {
+      setMidRaceJoinGroup(g);
       return;
     }
     onOpenRoom(g);
@@ -356,7 +387,8 @@ export function FindTab({
               (mine.some((item) => item.id === g.id) ||
                 isGroupMember(g, { userId: myUserId, nickname }))
             }
-            peekMode={filter === "ongoing"}
+            peekMode={filter === "ongoing" && !isMidRaceJoinOpen(g)}
+            midRaceJoin={isMidRaceJoinOpen(g)}
             onOpen={handleOpenGroup}
           />
         ))}
@@ -401,6 +433,22 @@ export function FindTab({
         onCreateFromRules={(g) => {
           setPeekGroup(null);
           onCreateFromRunningTemplate?.(g);
+        }}
+      />
+
+      <MidRaceJoinSheet
+        open={Boolean(midRaceJoinGroup)}
+        group={midRaceJoinGroup}
+        joining={midRaceJoining}
+        onClose={() => {
+          if (!midRaceJoining) setMidRaceJoinGroup(null);
+        }}
+        onJoin={(g) => {
+          if (!onJoinMidRace) return;
+          setMidRaceJoining(true);
+          void Promise.resolve(onJoinMidRace(g))
+            .then(() => setMidRaceJoinGroup(null))
+            .finally(() => setMidRaceJoining(false));
         }}
       />
     </PullToRefresh>

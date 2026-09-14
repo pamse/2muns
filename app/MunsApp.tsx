@@ -5,7 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, removeGroupMember } from "@/lib/groups";
+import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup } from "@/lib/groups";
+import { canGuestJoinGroup } from "@/lib/groupRecruiting";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { withdrawUserAccount } from "@/lib/account";
 import { ensurePublicUserFromAuth } from "@/lib/authUser";
@@ -37,6 +38,7 @@ import { LoginGateModal } from "./LoginGateModal";
 import { MyTab } from "./MyTab";
 import { NoticesSheet, useActiveNotices } from "./NoticesSheet";
 import { MunsyWelcomeModal, hasSeenMunsyWelcome, isMunsyWelcomePending, markMunsyWelcomePending, markMunsyWelcomeSeen } from "./MunsyWelcomeModal";
+import { HostPromotionModal, parseHostPromotionNotice, type HostPromotionPayload } from "./HostPromotionModal";
 import { Onboarding } from "./Onboarding";
 import { RoomDetail } from "./RoomDetail";
 import { useMyProfileImage } from "./useMyProfileImage";
@@ -141,6 +143,7 @@ export default function MunsApp() {
   const [room, setRoom] = useState<Group | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createPrefill, setCreatePrefill] = useState<CreateGroupPrefill | null>(null);
+  const [hostPromo, setHostPromo] = useState<HostPromotionPayload | null>(null);
   const [showNotices, setShowNotices] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showMunsyWelcome, setShowMunsyWelcome] = useState(false);
@@ -331,6 +334,21 @@ export default function MunsApp() {
     if (!ready) return;
     void reconcileOnboarding();
   }, [ready, reconcileOnboarding]);
+
+  useEffect(() => {
+    if (!ready || !userId || hostPromo) return;
+    const promoNotice = notices.find(
+      (notice) => notice.tag === "방장위임" && notice.user_id === userId,
+    );
+    if (!promoNotice) return;
+    const parsed = parseHostPromotionNotice(promoNotice.content);
+    if (!parsed) return;
+    setHostPromo({
+      noticeId: promoNotice.id,
+      groupId: parsed.groupId,
+      displayName: parsed.displayName,
+    });
+  }, [notices, userId, ready, hostPromo]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -590,9 +608,73 @@ export default function MunsApp() {
     openCreateSheet(groupToCreatePrefill(g));
   }
 
+  async function performQuitGroup(groupId: string) {
+    if (!userId) {
+      throw new Error("로그인이 필요합니다.");
+    }
+    const target = groups.find((item) => item.id === groupId);
+    if (!target) {
+      throw new Error("모임을 찾을 수 없습니다.");
+    }
+
+    const joinUserId = userId;
+    const owner = isGroupOwner(target, userId);
+    const remainingMembers = target.members.filter(
+      (member) => member.id !== joinUserId && member.id !== "me",
+    );
+
+    const result = await quitChallengeGroup({
+      groupId,
+      userId: joinUserId,
+      isOwner: owner,
+      remainingMemberCount: remainingMembers.length,
+    });
+
+    const nextJoinedIds = joinedGroupIds.filter(
+      (id) => normalizeGroupId(id) !== normalizeGroupId(groupId),
+    );
+    setJoinedGroupIds(nextJoinedIds);
+    persistJoinedIds(userId, nextJoinedIds);
+
+    if (result.type === "deleted") {
+      setGroups((prev) => prev.filter((item) => item.id !== groupId));
+      setToast("모임이 종료되었습니다");
+    } else if (result.type === "handoff") {
+      setGroups((prev) =>
+        prev.map((item) => {
+          if (item.id !== groupId) return item;
+          return {
+            ...item,
+            members: remainingMembers,
+            ownerId: result.newOwnerId,
+            createdBy: result.newOwnerId,
+            additionalRecruitingUntil: result.additionalRecruitingUntil,
+            dbStatus: result.additionalRecruitingUntil ? "active_recruiting" : item.dbStatus,
+          };
+        }),
+      );
+      setToast(
+        owner
+          ? "방장 권한을 넘기고 퇴장했습니다. 24시간 추가 모집이 시작됩니다."
+          : "챌린지에서 퇴장했습니다",
+      );
+    } else {
+      setGroups((prev) =>
+        prev.map((item) =>
+          item.id === groupId ? { ...item, members: remainingMembers } : item,
+        ),
+      );
+      setToast("챌린지에서 퇴장했습니다");
+    }
+
+    setRoom((current) => (current?.id === groupId ? null : current));
+    await refreshGroups();
+    return result;
+  }
+
   async function openRoom(g: Group) {
     const member = isGroupMember(g, { userId, nickname });
-    if (g.filter === "ongoing" && !member) {
+    if (!canGuestJoinGroup(g, member) && !member) {
       setShowEntryDenied(true);
       setAutoOpenVerify(false);
       return;
@@ -608,7 +690,7 @@ export default function MunsApp() {
       setRoom(g);
       return;
     }
-    if (g.filter === "ongoing") {
+    if (!canGuestJoinGroup(g, false)) {
       setShowEntryDenied(true);
       return;
     }
@@ -850,6 +932,7 @@ export default function MunsApp() {
               onFilterChange={setFilter}
               onOpenRoom={handleOpenRoom}
               onCreateFromRunningTemplate={handleCreateFromRunningTemplate}
+              onJoinMidRace={(g) => joinGroup(g)}
               myUserId={userId}
               nickname={nickname}
               isLoggedIn={isLoggedIn()}
@@ -875,41 +958,8 @@ export default function MunsApp() {
               onLogout={() => void handleLogout()}
               onWithdrawAccount={() => void handleWithdrawAccount()}
               onQuitGroup={async (groupId) => {
-                const joinUserId = userId || "me";
-                const target = groups.find((item) => item.id === groupId);
-                const remainingCount = target
-                  ? target.members.filter(
-                      (member) => member.id !== joinUserId && member.id !== "me",
-                    ).length
-                  : 0;
-
-                setGroups((prev) =>
-                  prev.map((item) =>
-                    item.id === groupId
-                      ? {
-                          ...item,
-                          members: item.members.filter(
-                            (member) => member.id !== joinUserId && member.id !== "me",
-                          ),
-                        }
-                      : item,
-                  ),
-                );
-                const nextJoinedIds = joinedGroupIds.filter(
-                  (id) => normalizeGroupId(id) !== normalizeGroupId(groupId),
-                );
-                setJoinedGroupIds(nextJoinedIds);
-                if (userId) {
-                  persistJoinedIds(userId, nextJoinedIds);
-                }
-
                 try {
-                  if (userId) {
-                    await removeGroupMember(groupId, userId, remainingCount);
-                  }
-                  setRoom((current) => (current?.id === groupId ? null : current));
-                  setToast("챌린지에서 퇴장했습니다");
-                  await refreshGroups();
+                  await performQuitGroup(groupId);
                 } catch (error) {
                   console.error("group quit failed", error);
                   setToast("챌린지 퇴장에 실패했습니다");
@@ -979,10 +1029,17 @@ export default function MunsApp() {
             }}
             onJoinGroup={(target) => joinGroup(target)}
             onDeleteGroup={(groupId) => {
-              setGroups((prev) => prev.filter((item) => item.id !== groupId));
-              setRoom(null);
-              setToast("모임을 삭제했습니다");
-              void refreshGroups();
+              void (async () => {
+                try {
+                  const result = await performQuitGroup(groupId);
+                  if (result.type === "deleted") {
+                    setToast("모임을 삭제했습니다");
+                  }
+                } catch (error) {
+                  console.error("owner quit/delete failed", error);
+                  setToast("처리에 실패했습니다");
+                }
+              })();
             }}
             onPointsEarned={handlePointsEarned}
             onCheerNotice={handleCheerNotice}
@@ -1028,6 +1085,30 @@ export default function MunsApp() {
           ownerId={userId || "me"}
           ownerName={nickname || "나"}
           ownerAvatar={myProfileImage || ME_AVATAR}
+        />
+
+        <HostPromotionModal
+          open={Boolean(hostPromo)}
+          displayName={hostPromo?.displayName ?? "멤버"}
+          onContinue={() => {
+            if (!hostPromo) return;
+            const notice = notices.find((item) => item.id === hostPromo.noticeId);
+            if (notice) void removeNotice(notice);
+            const target = groups.find(
+              (item) => normalizeGroupId(item.id) === normalizeGroupId(hostPromo.groupId),
+            );
+            setHostPromo(null);
+            if (target) {
+              setRoom(target);
+              setTab("find");
+            }
+          }}
+          onClose={() => {
+            if (!hostPromo) return;
+            const notice = notices.find((item) => item.id === hostPromo.noticeId);
+            if (notice) void removeNotice(notice);
+            setHostPromo(null);
+          }}
         />
 
         <LoginGateModal

@@ -54,6 +54,8 @@ export type Group = {
   startedAt?: string | null;
   /** DB `groups.status` 원본. 종료/완료 모임 제외에 사용 */
   dbStatus?: string | null;
+  /** 방장 퇴장 후 24h 추가 모집 만료 시각 (ISO) */
+  additionalRecruitingUntil?: string | null;
 };
 
 /** 모임 상세(룸)의 숏폼 인증 영상 피드 아이템 */

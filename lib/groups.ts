@@ -13,6 +13,7 @@ import {
   type Member,
 } from "@/app/data";
 import { getCategoryThumbnail } from "@/lib/categories";
+import { additionalRecruitingEndsAt, isAdditionalRecruitingActive } from "@/lib/groupRecruiting";
 import { challengeDayNumber } from "@/lib/dates";
 import { getUserJoinLimit } from "@/lib/points";
 import { cacheBustAvatarUrl, pickMemberAvatarUrl } from "@/lib/profile";
@@ -115,6 +116,7 @@ export function isStartedGroupStatus(
     value === "started" ||
     value === "ongoing" ||
     value === "active" ||
+    value === "active_recruiting" ||
     Boolean(startedAt)
   );
 }
@@ -161,6 +163,7 @@ export function mapAppGroup(row: AppGroup, members: Member[]): Group {
     category: row.category,
     raceStatus,
     dbStatus: row.status,
+    additionalRecruitingUntil: row.additional_recruiting_until ?? null,
   };
 }
 
@@ -268,7 +271,18 @@ async function hydrateGroups(groupRows: AppGroup[]): Promise<Group[]> {
     membersByGroup.set(row.id, list);
   }
 
-  return groupRows.map((row) => mapAppGroup(row, membersByGroup.get(row.id) ?? []));
+  const mapped = groupRows.map((row) =>
+    mapAppGroup(row, membersByGroup.get(row.id) ?? []),
+  );
+  for (const group of mapped) {
+    if (
+      group.additionalRecruitingUntil &&
+      !isAdditionalRecruitingActive(group)
+    ) {
+      void clearExpiredAdditionalRecruiting(group.id, group.additionalRecruitingUntil);
+    }
+  }
+  return mapped;
 }
 
 export function ensureJoinedMembership(
@@ -653,4 +667,136 @@ export async function removeGroupMember(groupId: string, userId: string, memberC
   if (countError) {
     console.error("groups current_count update failed", countError);
   }
+}
+
+export type QuitChallengeResult =
+  | { type: "left" }
+  | { type: "deleted" }
+  | {
+      type: "handoff";
+      newOwnerId: string;
+      additionalRecruitingUntil: string | null;
+    };
+
+/** 멤버 퇴장 / 방장 퇴장(권한 위임·24h 추가 모집·단독 시 삭제) */
+export async function quitChallengeGroup(options: {
+  groupId: string;
+  userId: string;
+  isOwner: boolean;
+  remainingMemberCount: number;
+}): Promise<QuitChallengeResult> {
+  const { groupId, userId, isOwner } = options;
+
+  if (!isOwner) {
+    await removeGroupMember(groupId, userId, options.remainingMemberCount);
+    return { type: "left" };
+  }
+
+  const { data: groupRow, error: groupError } = await supabase
+    .from("groups")
+    .select("id, status, started_at, title")
+    .eq("id", groupId)
+    .maybeSingle();
+
+  if (groupError) {
+    throw new Error(groupError.message || "모임 정보를 불러오지 못했습니다.");
+  }
+  if (!groupRow) {
+    throw new Error("모임을 찾을 수 없습니다.");
+  }
+
+  const { data: memberRows, error: membersError } = await supabase
+    .from("group_members")
+    .select("user_id, created_at")
+    .eq("group_id", groupId)
+    .order("created_at", { ascending: true });
+
+  if (membersError) {
+    throw new Error(membersError.message || "멤버 목록을 불러오지 못했습니다.");
+  }
+
+  const remaining = (memberRows ?? []).filter((row) => row.user_id !== userId);
+
+  if (remaining.length === 0) {
+    await supabase.from("group_members").delete().eq("group_id", groupId);
+    const { error: deleteError } = await supabase.from("groups").delete().eq("id", groupId);
+    if (deleteError) {
+      throw new Error(deleteError.message || "모임 삭제에 실패했습니다.");
+    }
+    return { type: "deleted" };
+  }
+
+  const newOwnerId = remaining[0]!.user_id;
+  const raceStarted = isStartedGroupStatus(groupRow.status, groupRow.started_at);
+  const additionalUntil = raceStarted ? additionalRecruitingEndsAt() : null;
+
+  const { error: leaveError } = await supabase
+    .from("group_members")
+    .delete()
+    .eq("group_id", groupId)
+    .eq("user_id", userId);
+  if (leaveError) {
+    throw new Error(leaveError.message || "모임 탈퇴에 실패했습니다.");
+  }
+
+  const groupPatch: {
+    owner_id: string;
+    current_count: number;
+    additional_recruiting_until?: string | null;
+    status?: string;
+  } = {
+    owner_id: newOwnerId,
+    current_count: remaining.length,
+  };
+
+  if (raceStarted) {
+    groupPatch.additional_recruiting_until = additionalUntil;
+    groupPatch.status = "active_recruiting";
+  } else {
+    groupPatch.additional_recruiting_until = null;
+  }
+
+  const { error: updateError } = await supabase
+    .from("groups")
+    .update(groupPatch)
+    .eq("id", groupId);
+  if (updateError) {
+    throw new Error(updateError.message || "방장 위임에 실패했습니다.");
+  }
+
+  const { data: newOwnerProfile } = await supabase
+    .from("users")
+    .select("nickname")
+    .eq("id", newOwnerId)
+    .maybeSingle();
+  const displayName = newOwnerProfile?.nickname?.trim() || "멤버";
+
+  try {
+    await supabase.from("notices").insert({
+      user_id: newOwnerId,
+      title: `끝까지 달리는 ${displayName} 님, 멋져요! 👑`,
+      content: `host_promotion:${groupId}:${displayName}`,
+      tag: "방장위임",
+      is_active: true,
+    });
+  } catch (noticeError) {
+    console.error("host promotion notice insert failed", noticeError);
+  }
+
+  return {
+    type: "handoff",
+    newOwnerId,
+    additionalRecruitingUntil: additionalUntil,
+  };
+}
+
+/** 만료된 추가 모집 창 정리 (조회 시 best-effort) */
+export async function clearExpiredAdditionalRecruiting(groupId: string, until: string | null) {
+  if (!until || isAdditionalRecruitingActive({ additionalRecruitingUntil: until })) {
+    return;
+  }
+  await supabase
+    .from("groups")
+    .update({ additional_recruiting_until: null })
+    .eq("id", groupId);
 }

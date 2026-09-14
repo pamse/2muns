@@ -83,6 +83,7 @@ export type Database = {
           status: string | null;
           owner_id: string | null;
           started_at: string | null;
+          additional_recruiting_until: string | null;
           created_at: string;
         };
         Insert: {
@@ -98,6 +99,7 @@ export type Database = {
           status?: string | null;
           owner_id?: string | null;
           started_at?: string | null;
+          additional_recruiting_until?: string | null;
           created_at?: string;
         };
         Update: {
@@ -113,6 +115,7 @@ export type Database = {
           status?: string | null;
           owner_id?: string | null;
           started_at?: string | null;
+          additional_recruiting_until?: string | null;
           created_at?: string;
         };
         Relationships: [];
