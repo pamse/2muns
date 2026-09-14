@@ -13,7 +13,7 @@ import {
   type Member,
 } from "@/app/data";
 import { getCategoryThumbnail } from "@/lib/categories";
-import { additionalRecruitingEndsAt, isAdditionalRecruitingActive } from "@/lib/groupRecruiting";
+import { isAdditionalRecruitingActive } from "@/lib/groupRecruiting";
 import { challengeDayNumber } from "@/lib/dates";
 import { getUserJoinLimit } from "@/lib/points";
 import { cacheBustAvatarUrl, pickMemberAvatarUrl } from "@/lib/profile";
@@ -756,8 +756,17 @@ export async function quitChallengeGroup(options: {
   }
 
   const newOwnerId = remaining[0]!.user_id;
-  const raceStarted = isStartedGroupStatus(groupRow.status, groupRow.started_at);
-  const additionalUntil = raceStarted ? additionalRecruitingEndsAt() : null;
+
+  const { error: updateError } = await supabase
+    .from("groups")
+    .update({
+      owner_id: newOwnerId,
+      current_count: remaining.length,
+    })
+    .eq("id", groupId);
+  if (updateError) {
+    throw new Error(updateError.message || "방장 위임에 실패했습니다.");
+  }
 
   const { error: leaveError } = await supabase
     .from("group_members")
@@ -766,31 +775,6 @@ export async function quitChallengeGroup(options: {
     .eq("user_id", userId);
   if (leaveError) {
     throw new Error(leaveError.message || "모임 탈퇴에 실패했습니다.");
-  }
-
-  const groupPatch: {
-    owner_id: string;
-    current_count: number;
-    additional_recruiting_until?: string | null;
-    status?: string;
-  } = {
-    owner_id: newOwnerId,
-    current_count: remaining.length,
-  };
-
-  if (raceStarted) {
-    groupPatch.additional_recruiting_until = additionalUntil;
-    groupPatch.status = "active_recruiting";
-  } else {
-    groupPatch.additional_recruiting_until = null;
-  }
-
-  const { error: updateError } = await supabase
-    .from("groups")
-    .update(groupPatch)
-    .eq("id", groupId);
-  if (updateError) {
-    throw new Error(updateError.message || "방장 위임에 실패했습니다.");
   }
 
   const { data: newOwnerProfile } = await supabase
@@ -815,17 +799,13 @@ export async function quitChallengeGroup(options: {
   return {
     type: "handoff",
     newOwnerId,
-    additionalRecruitingUntil: additionalUntil,
+    additionalRecruitingUntil: null,
   };
 }
 
-/** 만료된 추가 모집 창 정리 (조회 시 best-effort) */
-export async function clearExpiredAdditionalRecruiting(groupId: string, until: string | null) {
+/** 만료된 추가 모집 창 정리 (컬럼 없으면 no-op) */
+export async function clearExpiredAdditionalRecruiting(_groupId: string, until: string | null) {
   if (!until || isAdditionalRecruitingActive({ additionalRecruitingUntil: until })) {
     return;
   }
-  await supabase
-    .from("groups")
-    .update({ additional_recruiting_until: null })
-    .eq("id", groupId);
 }
