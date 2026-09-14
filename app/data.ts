@@ -60,16 +60,6 @@ export type FeedItem = {
   videoUrl?: string; // 실시간 촬영본 Object URL
 };
 
-/** MY 탭 실시간 랭킹 항목 */
-export type RankUser = {
-  rank: number;
-  name: string;
-  color: string;
-  points: number;
-  avatarUrl: string;
-  me?: boolean;
-};
-
 // ---- 아바타 컬러 팔레트 (네온 다크 테마와 어울리는 조합) ----
 const C = {
   green: "linear-gradient(135deg,#00FF87,#0ea5e9)",
@@ -437,55 +427,6 @@ export const INITIAL_FEED: FeedItem[] = [
     liked: false,
   },
 ];
-
-export const RANKING: RankUser[] = [
-  { rank: 1, name: "하은", color: C.lime, points: 2480, avatarUrl: unsplash("1438761681033-6461ffad8d80") },
-  { rank: 2, name: "민준", color: C.amber, points: 2310, avatarUrl: unsplash("1506794778202-cad84cf45f1d") },
-  { rank: 3, name: "예준", color: C.purple, points: 2205, avatarUrl: unsplash("1472099645785-5658abf4ff4e") },
-  { rank: 4, name: "나(You)", color: C.green, points: 1980, avatarUrl: ME_AVATAR, me: true },
-  { rank: 5, name: "수아", color: C.pink, points: 1875, avatarUrl: unsplash("1494790108377-be9c29b29330") },
-  { rank: 6, name: "지호", color: C.cyan, points: 1740, avatarUrl: unsplash("1519085360753-af0119f7cbe7") },
-  { rank: 7, name: "채원", color: C.green, points: 1620, avatarUrl: unsplash("1544005313-94ddf0286df2") },
-  { rank: 8, name: "시우", color: C.amber, points: 1510, avatarUrl: unsplash("1463453091185-61582044d556") },
-  { rank: 9, name: "나윤", color: C.pink, points: 1390, avatarUrl: unsplash("1487412720507-e7ab37603c6f") },
-  { rank: 10, name: "도윤", color: C.cyan, points: 1250, avatarUrl: unsplash("1500648767791-00dcc994a43e") },
-];
-
-/** mock 유저 + 현재 유저 포인트로 실시간 랭킹 계산 */
-export function buildLiveRanking(
-  mockUsers: RankUser[],
-  me: {
-    name: string;
-    points: number;
-    color?: string;
-    avatarUrl?: string | null;
-  },
-) {
-  const others = mockUsers.filter((user) => !user.me);
-  const meEntry: RankUser = {
-    rank: 0,
-    name: me.name,
-    color: me.color ?? C.green,
-    points: me.points,
-    avatarUrl: me.avatarUrl || ME_AVATAR,
-    me: true,
-  };
-
-  const sorted = [...others, meEntry].sort((a, b) => {
-    if (b.points !== a.points) return b.points - a.points;
-    if (a.me) return 1;
-    if (b.me) return -1;
-    return a.name.localeCompare(b.name, "ko");
-  });
-
-  const ranked = sorted.map((user, index) => ({ ...user, rank: index + 1 }));
-  const myRank = ranked.find((user) => user.me)?.rank ?? null;
-
-  return {
-    rank: myRank,
-    topTen: ranked.slice(0, 10),
-  };
-}
 
 /** 마이페이지에서 동시에 참여할 수 있는 최대 모임 수 */
 export const MAX_JOINED_GROUPS = 3;

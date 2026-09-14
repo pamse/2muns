@@ -24,8 +24,6 @@ import { validateNickname } from "./useNickname";
 import {
   COMPLETED_HABIT_REWARD_POINTS,
   MAX_JOINED_GROUPS,
-  buildLiveRanking,
-  RANKING,
   SAMPLE_COMPLETED_HABITS,
   hasRaceStarted,
   listJoinedActiveGroups,
@@ -47,7 +45,9 @@ import {
   localDateKey,
   resolveStartedAt,
 } from "@/lib/dates";
+import { fetchLiveRanking, type RankUser } from "@/lib/ranking";
 import { fetchUserVerificationDays } from "@/lib/verifications";
+import { POINTS_UPDATED_EVENT } from "@/lib/points";
 import {
   awardCompletionPoints,
   POINT_SPEND,
@@ -67,6 +67,8 @@ const PROFILE = {
   color: "linear-gradient(135deg,#00FF87,#0ea5e9)",
 };
 
+const FEEDBACK_URL = "https://tally.so/r/A7EAdW";
+
 const USER_GUIDE_URL =
   "https://humble-ray-f5a.notion.site/2muns-User-Manual-3da4df66ba9d807396d7f3f41721903e?source=copy_link";
 
@@ -82,7 +84,7 @@ function ExternalLinkCard({ href, title }: { href: string; title: string }) {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="block cursor-pointer rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 transition-colors hover:border-zinc-700"
+      className="flex cursor-pointer items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 transition hover:border-zinc-700"
     >
       <span className="text-sm font-semibold text-white">{title}</span>
     </a>
@@ -92,6 +94,7 @@ function ExternalLinkCard({ href, title }: { href: string; title: string }) {
 function FooterLinkCards() {
   return (
     <nav aria-label="이용 안내 및 약관" className="flex flex-col gap-2.5">
+      <ExternalLinkCard href={FEEDBACK_URL} title="의견 및 오류 제보" />
       <ExternalLinkCard href={USER_GUIDE_URL} title="이용 가이드" />
       <ExternalLinkCard href={TERMS_URL} title="이용약관" />
       <ExternalLinkCard href={PRIVACY_URL} title="개인정보 처리방침" />
@@ -241,8 +244,14 @@ function PointsRankingSummary({
           <span className="text-xs">실시간 랭킹</span>
         </div>
         <p className="text-2xl font-extrabold text-white">
-          {rank ?? "-"}
-          <span className="ml-0.5 text-sm font-medium text-gray-500">위</span>
+          {rank != null ? (
+            <>
+              {rank}
+              <span className="ml-0.5 text-sm font-medium text-gray-500">위</span>
+            </>
+          ) : (
+            "-"
+          )}
         </p>
       </Card>
       </div>
@@ -676,6 +685,10 @@ export function MyTab({
     days: number[];
   } | null>(null);
   const [fetchedCompletedGroups, setFetchedCompletedGroups] = useState<Group[]>([]);
+  const [liveRanking, setLiveRanking] = useState<{
+    topFive: RankUser[];
+    rank: number | null;
+  }>({ topFive: [], rank: null });
 
   useEffect(() => {
     if (myGroups.length === 0) {
@@ -753,20 +766,44 @@ export function MyTab({
     shortsWindow && purgeLeft > 0 && shortsKey && dismissedShortsKey !== shortsKey,
   );
   const canAdd = myGroups.length < maxJoinedGroups;
-  const liveRanking = useMemo(
-    () =>
-      buildLiveRanking(RANKING, {
-        name: nickname || "나",
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRanking() {
+      const next = await fetchLiveRanking({
+        userId: myUserId,
         points: userPoints,
-        color: PROFILE.color,
-        avatarUrl: myProfileImage,
-      }),
-    [nickname, userPoints, myProfileImage],
-  );
+      });
+      if (!cancelled) {
+        setLiveRanking(next);
+      }
+    }
+
+    void loadRanking();
+    return () => {
+      cancelled = true;
+    };
+  }, [myUserId, userPoints]);
+
+  useEffect(() => {
+    if (!myUserId) return;
+    const onPointsUpdated = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ userId: string; snapshot: { points: number } }>
+      ).detail;
+      const points =
+        detail?.userId === myUserId ? detail.snapshot.points : userPoints;
+      void fetchLiveRanking({ userId: myUserId, points }).then(setLiveRanking);
+    };
+    window.addEventListener(POINTS_UPDATED_EVENT, onPointsUpdated);
+    return () => window.removeEventListener(POINTS_UPDATED_EVENT, onPointsUpdated);
+  }, [myUserId, userPoints]);
+
   const myStats = useMemo(
     () => ({
       points: userPoints,
-      rank: liveRanking.rank,
+      rank: userPoints <= 0 ? null : liveRanking.rank,
     }),
     [userPoints, liveRanking.rank],
   );
@@ -1124,55 +1161,61 @@ export function MyTab({
         onPurchaseSlot={() => void handlePurchaseSlot()}
       />
 
-      {/* 실시간 유저 랭킹 (1~10위) */}
+      {/* 실시간 랭킹 TOP 5 */}
       <section>
         <h2 className="mb-2 flex items-center gap-2 px-1 text-sm font-bold text-gray-300">
-          <Trophy size={16} className="text-[#00FF87]" /> 실시간 유저 랭킹 TOP 10
+          <Trophy size={16} className="text-[#00FF87]" /> 실시간 랭킹 TOP 5
         </h2>
         <Card className="divide-y divide-gray-800 p-1">
-          {liveRanking.topTen.map((u) => (
-            <div
-              key={u.me ? "me" : `${u.rank}-${u.name}`}
-              className={`flex items-center gap-3 rounded-xl p-3 ${
-                u.me ? "bg-[#00FF87]/10" : ""
-              }`}
-            >
-              <span className="w-6 text-center text-sm font-bold">
-                {u.rank <= 3 ? (
-                  <Crown
-                    size={18}
-                    className={
-                      u.rank === 1
-                        ? "mx-auto text-yellow-400"
-                        : u.rank === 2
-                        ? "mx-auto text-gray-300"
-                        : "mx-auto text-amber-600"
-                    }
-                  />
-                ) : (
-                  <span className="text-gray-500">{u.rank}</span>
-                )}
-              </span>
-              <Avatar
-                name={u.name}
-                color={u.color}
-                src={u.me ? myProfileImage ?? undefined : u.avatarUrl}
-                size={36}
-              />
-              <span
-                className={`flex-1 text-sm font-semibold ${
-                  u.me ? "text-[#00FF87]" : "text-white"
+          {liveRanking.topFive.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm leading-relaxed text-zinc-400">
+              첫 챌린지를 달성하고 첫 번째 랭커가 되어보세요! 🔥
+            </p>
+          ) : (
+            liveRanking.topFive.map((u) => (
+              <div
+                key={u.userId}
+                className={`flex items-center gap-3 rounded-xl p-3 ${
+                  u.me ? "bg-[#00FF87]/10" : ""
                 }`}
               >
-                {u.name}
-                {u.me ? <span className="ml-1 text-[11px] text-gray-400">· 나</span> : null}
-              </span>
-              <span className="text-sm font-bold text-gray-300">
-                {u.points.toLocaleString()}
-                <span className="ml-0.5 text-[11px] font-normal text-gray-500">P</span>
-              </span>
-            </div>
-          ))}
+                <span className="w-6 text-center text-sm font-bold">
+                  {u.rank <= 3 ? (
+                    <Crown
+                      size={18}
+                      className={
+                        u.rank === 1
+                          ? "mx-auto text-yellow-400"
+                          : u.rank === 2
+                          ? "mx-auto text-gray-300"
+                          : "mx-auto text-amber-600"
+                      }
+                    />
+                  ) : (
+                    <span className="text-gray-500">{u.rank}</span>
+                  )}
+                </span>
+                <Avatar
+                  name={u.name}
+                  color={u.color}
+                  src={u.me ? myProfileImage ?? undefined : u.avatarUrl || undefined}
+                  size={36}
+                />
+                <span
+                  className={`flex-1 text-sm font-semibold ${
+                    u.me ? "text-[#00FF87]" : "text-white"
+                  }`}
+                >
+                  {u.name}
+                  {u.me ? <span className="ml-1 text-[11px] text-gray-400">· 나</span> : null}
+                </span>
+                <span className="text-sm font-bold text-gray-300">
+                  {u.points.toLocaleString()}
+                  <span className="ml-0.5 text-[11px] font-normal text-gray-500">P</span>
+                </span>
+              </div>
+            ))
+          )}
         </Card>
       </section>
 
