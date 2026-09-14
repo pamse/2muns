@@ -34,6 +34,18 @@ function displayName(nickname: string | null | undefined) {
   return trimmed || "익명";
 }
 
+function normalizePoints(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeRankingRow(row: RankingUserRow): RankingUserRow {
+  return {
+    ...row,
+    points: normalizePoints(row.points),
+  };
+}
+
 function mapRankingRow(
   row: RankingUserRow,
   index: number,
@@ -45,10 +57,27 @@ function mapRankingRow(
     userId: row.id,
     name: displayName(row.nickname),
     color: rankColor(index, isMe),
-    points: row.points ?? 0,
+    points: row.points,
     avatarUrl: row.avatar_url?.trim() ?? "",
     me: isMe,
   };
+}
+
+/** 로컬 포인트가 DB에 반영되지 않은 경우 랭킹 조회 전 동기화 */
+async function ensureCurrentUserPointsVisible(
+  userId: string | null | undefined,
+  points: number,
+) {
+  if (!userId || points <= 0) return;
+
+  const { error } = await supabase
+    .from("users")
+    .update({ points })
+    .eq("id", userId);
+
+  if (error) {
+    console.error("ensureCurrentUserPointsVisible failed:", error);
+  }
 }
 
 export async function fetchTopRankedUsers(
@@ -57,18 +86,23 @@ export async function fetchTopRankedUsers(
   const { data, error } = await supabase
     .from("users")
     .select("id, nickname, avatar_url, points")
+    .not("points", "is", null)
     .gt("points", 0)
     .order("points", { ascending: false })
     .limit(5);
 
   if (error) {
-    console.error("fetchTopRankedUsers failed", error);
+    console.error("fetchTopRankedUsers query error:", error);
     return [];
   }
 
-  return (data ?? []).map((row, index) =>
-    mapRankingRow(row as RankingUserRow, index, currentUserId),
-  );
+  console.log("fetchTopRankedUsers data loaded:", data);
+
+  const rows = (data ?? [])
+    .map((row) => normalizeRankingRow(row as RankingUserRow))
+    .filter((row) => row.points > 0);
+
+  return rows.map((row, index) => mapRankingRow(row, index, currentUserId));
 }
 
 /** 1P 이상일 때만 순위 반환. 0P 이하면 null */
@@ -78,10 +112,11 @@ export async function fetchMyRank(points: number): Promise<number | null> {
   const { count, error } = await supabase
     .from("users")
     .select("id", { count: "exact", head: true })
+    .not("points", "is", null)
     .gt("points", points);
 
   if (error) {
-    console.error("fetchMyRank failed", error);
+    console.error("fetchMyRank query error:", error);
     return null;
   }
 
@@ -92,6 +127,8 @@ export async function fetchLiveRanking(options: {
   userId?: string | null;
   points: number;
 }) {
+  await ensureCurrentUserPointsVisible(options.userId, options.points);
+
   const [topFive, rank] = await Promise.all([
     fetchTopRankedUsers(options.userId),
     fetchMyRank(options.points),
