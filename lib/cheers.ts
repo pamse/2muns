@@ -41,6 +41,31 @@ function summarize(ids: string[], viewerId?: string | null): CheerSummary {
   };
 }
 
+export function applyCheerToggleLocal(input: {
+  groupId: string;
+  day: number;
+  targetUserId: string;
+  cheererUserId: string;
+}): { summary: CheerSummary; added: boolean } {
+  const key = recordKey(input.groupId, input.day, input.targetUserId);
+  const store = readStore();
+  const current = [...new Set((store[key] ?? []).map(normalizeGroupId))];
+  const cheerer = normalizeGroupId(input.cheererUserId);
+  const hasCheered = current.includes(cheerer);
+
+  const nextIds = hasCheered
+    ? current.filter((id) => id !== cheerer)
+    : [...current, cheerer];
+
+  store[key] = nextIds;
+  writeStore(store);
+
+  return {
+    summary: summarize(nextIds, input.cheererUserId),
+    added: !hasCheered,
+  };
+}
+
 export async function fetchCheersForDay(
   groupId: string,
   day: number,
@@ -94,18 +119,17 @@ async function syncCheerInsert(input: {
   targetUserId: string;
   cheererUserId: string;
 }) {
-  try {
-    await supabase.from("verification_cheers").upsert(
-      {
-        group_id: input.groupId,
-        target_user_id: input.targetUserId,
-        cheerer_user_id: input.cheererUserId,
-        day: input.day,
-      },
-      { onConflict: "group_id,target_user_id,cheerer_user_id,day" },
-    );
-  } catch {
-    // ignore
+  const { error } = await supabase.from("verification_cheers").upsert(
+    {
+      group_id: input.groupId,
+      target_user_id: input.targetUserId,
+      cheerer_user_id: input.cheererUserId,
+      day: input.day,
+    },
+    { onConflict: "group_id,target_user_id,cheerer_user_id,day" },
+  );
+  if (error) {
+    throw new Error(error.message || "응원 저장에 실패했습니다.");
   }
 }
 
@@ -115,16 +139,29 @@ async function syncCheerDelete(input: {
   targetUserId: string;
   cheererUserId: string;
 }) {
-  try {
-    await supabase
-      .from("verification_cheers")
-      .delete()
-      .eq("group_id", input.groupId)
-      .eq("day", input.day)
-      .eq("target_user_id", input.targetUserId)
-      .eq("cheerer_user_id", input.cheererUserId);
-  } catch {
-    // ignore
+  const { error } = await supabase
+    .from("verification_cheers")
+    .delete()
+    .eq("group_id", input.groupId)
+    .eq("day", input.day)
+    .eq("target_user_id", input.targetUserId)
+    .eq("cheerer_user_id", input.cheererUserId);
+  if (error) {
+    throw new Error(error.message || "응원 취소에 실패했습니다.");
+  }
+}
+
+export async function persistCheerToggle(input: {
+  groupId: string;
+  day: number;
+  targetUserId: string;
+  cheererUserId: string;
+  added: boolean;
+}) {
+  if (input.added) {
+    await syncCheerInsert(input);
+  } else {
+    await syncCheerDelete(input);
   }
 }
 
@@ -134,24 +171,12 @@ export async function toggleVerificationCheer(input: {
   targetUserId: string;
   cheererUserId: string;
 }): Promise<CheerSummary> {
-  const key = recordKey(input.groupId, input.day, input.targetUserId);
-  const store = readStore();
-  const current = [...new Set((store[key] ?? []).map(normalizeGroupId))];
-  const cheerer = normalizeGroupId(input.cheererUserId);
-  const hasCheered = current.includes(cheerer);
-
-  const nextIds = hasCheered
-    ? current.filter((id) => id !== cheerer)
-    : [...current, cheerer];
-
-  store[key] = nextIds;
-  writeStore(store);
-
-  if (hasCheered) {
-    await syncCheerDelete(input);
-  } else {
-    await syncCheerInsert(input);
+  const { summary, added } = applyCheerToggleLocal(input);
+  try {
+    await persistCheerToggle({ ...input, added });
+  } catch (error) {
+    applyCheerToggleLocal(input);
+    throw error;
   }
-
-  return summarize(nextIds, input.cheererUserId);
+  return summary;
 }

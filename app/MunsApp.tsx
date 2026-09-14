@@ -152,6 +152,7 @@ export default function MunsApp() {
   const [showEntryDenied, setShowEntryDenied] = useState(false);
   const [showJoinLimit, setShowJoinLimit] = useState(false);
   const [autoOpenVerify, setAutoOpenVerify] = useState(false);
+  const [roomFocusDay, setRoomFocusDay] = useState<number | null>(null);
   const pendingIntentRef = useRef<AuthIntent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const { src: myProfileImage, applyFile: applyProfileImage, clearImage, uploading: profileImageUploading } = useMyProfileImage();
@@ -807,6 +808,7 @@ export default function MunsApp() {
     );
     setShowNotices(false);
     if (target) {
+      setRoomFocusDay(link.day);
       void openRoom(target);
     } else {
       setToast("모임 정보를 찾을 수 없습니다");
@@ -817,6 +819,7 @@ export default function MunsApp() {
     if (notice.user_id && userId && notice.user_id === userId) {
       prependNotice(notice);
     }
+    void refreshNotices(true);
   }
 
   useEffect(() => {
@@ -1009,6 +1012,7 @@ export default function MunsApp() {
             onBack={() => {
               setRoom(null);
               setAutoOpenVerify(false);
+              setRoomFocusDay(null);
             }}
             nickname={nickname}
             myAvatar={myProfileImage}
@@ -1018,6 +1022,8 @@ export default function MunsApp() {
             }
             autoOpenVerify={autoOpenVerify}
             onAutoOpenVerifyHandled={() => setAutoOpenVerify(false)}
+            initialChallengeDay={roomFocusDay}
+            onInitialChallengeDayHandled={() => setRoomFocusDay(null)}
             onGroupUpdate={(updated) => {
               setRoom(updated);
               setGroups((prev) =>

@@ -40,8 +40,9 @@ import {
   verificationVideoUrl,
 } from "@/lib/verifications";
 import {
+  applyCheerToggleLocal,
   fetchCheersForDay,
-  toggleVerificationCheer,
+  persistCheerToggle,
   type CheerSummary,
 } from "@/lib/cheers";
 import {
@@ -196,11 +197,8 @@ function CheerLikeButton({
   onToggle?: () => void;
   onOwnPostClick?: () => void;
 }) {
-  if (count <= 0) return null;
-
-  const label = `👍 ${count}`;
-
   if (ownPost) {
+    if (count <= 0) return null;
     return (
       <div
         role="status"
@@ -210,10 +208,21 @@ function CheerLikeButton({
         }}
         className="absolute top-2 right-2 z-10 flex cursor-default items-center rounded-full border border-white/10 bg-black/50 px-2 py-1 text-[11px] font-semibold text-white backdrop-blur-sm"
       >
-        {label}
+        👍 {count}
       </div>
     );
   }
+
+  if (!onToggle) {
+    if (count <= 0) return null;
+    return (
+      <span className="absolute top-2 right-2 z-10 flex items-center rounded-full border border-white/10 bg-black/50 px-2 py-1 text-[11px] font-semibold text-white backdrop-blur-sm">
+        👍 {count}
+      </span>
+    );
+  }
+
+  const label = count > 0 ? `👍 ${count}` : "👍";
 
   return (
     <button
@@ -222,9 +231,9 @@ function CheerLikeButton({
       aria-pressed={active}
       onClick={(event) => {
         event.stopPropagation();
-        onToggle?.();
+        onToggle();
       }}
-      className={`absolute top-2 right-2 z-30 flex items-center rounded-full px-2 py-1 text-[11px] font-semibold backdrop-blur-sm transition-colors ${
+      className={`absolute top-2 right-2 z-30 flex items-center rounded-full px-2 py-1 text-[11px] font-semibold backdrop-blur-sm transition-transform active:scale-95 ${
         active
           ? "border border-emerald-500/50 bg-black/70 text-white shadow-[0_0_12px_rgba(16,185,129,0.25)]"
           : "border border-white/10 bg-black/50 text-zinc-200 hover:bg-black/70"
@@ -924,6 +933,8 @@ export function RoomDetail({
   requireAuth,
   autoOpenVerify = false,
   onAutoOpenVerifyHandled,
+  initialChallengeDay = null,
+  onInitialChallengeDayHandled,
   onPointsEarned,
   onCheerNotice,
   onToast,
@@ -942,6 +953,9 @@ export function RoomDetail({
   requireAuth?: () => boolean;
   autoOpenVerify?: boolean;
   onAutoOpenVerifyHandled?: () => void;
+  /** 알림(cheer://) 등에서 특정 일차 인증 그리드로 이동 */
+  initialChallengeDay?: number | null;
+  onInitialChallengeDayHandled?: () => void;
   onPointsEarned?: (result: PointAwardResult) => void;
   onCheerNotice?: (notice: Notice) => void;
   onToast?: (message: string) => void;
@@ -980,6 +994,20 @@ export function RoomDetail({
     setCameraOpen(true);
     onAutoOpenVerifyHandled?.();
   }, [autoOpenVerify, onAutoOpenVerifyHandled]);
+
+  useEffect(() => {
+    if (!initialChallengeDay || initialChallengeDay < 1) return;
+    const clamped = Math.min(initialChallengeDay, group.total, currentDay);
+    setWeekIndex(Math.floor((clamped - 1) / 7));
+    setDayOffset((clamped - 1) % 7);
+    onInitialChallengeDayHandled?.();
+  }, [
+    initialChallengeDay,
+    group.id,
+    group.total,
+    currentDay,
+    onInitialChallengeDayHandled,
+  ]);
 
   const started = hasRaceStarted(group) || forcedStarted;
   const owner = isGroupOwner(group, userId);
@@ -1272,20 +1300,23 @@ export function RoomDetail({
       return;
     }
 
-    try {
-      const wasCheered = cheerMap[normalizedTarget]?.cheeredByMe ?? false;
-      const summary = await toggleVerificationCheer({
-        groupId: group.id,
-        day: challengeDay,
-        targetUserId: resolvedTarget,
-        cheererUserId: userId,
-      });
-      setCheerMap((prev) => ({
-        ...prev,
-        [normalizedTarget]: summary,
-      }));
+    const toggleInput = {
+      groupId: group.id,
+      day: challengeDay,
+      targetUserId: resolvedTarget,
+      cheererUserId: userId,
+    };
 
-      if (!wasCheered && summary.cheeredByMe) {
+    const { summary: optimistic, added } = applyCheerToggleLocal(toggleInput);
+    setCheerMap((prev) => ({
+      ...prev,
+      [normalizedTarget]: optimistic,
+    }));
+
+    try {
+      await persistCheerToggle({ ...toggleInput, added });
+
+      if (added && optimistic.cheeredByMe) {
         const result = await awardEmojiFeedbackPoints(
           userId,
           group.id,
@@ -1307,7 +1338,8 @@ export function RoomDetail({
         if (notice) {
           onCheerNotice?.(notice);
         }
-      } else if (wasCheered && !summary.cheeredByMe) {
+        onNoticesRefreshRef.current?.();
+      } else if (!added) {
         await revokeCheerNotice({
           groupId: group.id,
           day: challengeDay,
@@ -1316,7 +1348,13 @@ export function RoomDetail({
         });
       }
     } catch (error) {
+      const reverted = applyCheerToggleLocal(toggleInput);
+      setCheerMap((prev) => ({
+        ...prev,
+        [normalizedTarget]: reverted.summary,
+      }));
       console.error("cheer toggle failed", error);
+      onToast?.("응원 처리에 실패했습니다");
     }
   }
 
@@ -1591,7 +1629,12 @@ export function RoomDetail({
                     seat.me ? () => onToast?.("내가 올린 인증입니다") : undefined
                   }
                   onToggleCheer={
-                    viewingToday && userId && !seat.me && !seat.empty
+                    userId &&
+                    !seat.me &&
+                    !seat.empty &&
+                    (Boolean(seat.videoUrl) ||
+                      Boolean(seat.verifiedAtLabel) ||
+                      Boolean(seat.archived))
                       ? () => void handleToggleCheer(seat.id)
                       : undefined
                   }
