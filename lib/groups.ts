@@ -707,18 +707,47 @@ export async function quitChallengeGroup(options: {
 
   const { data: memberRows, error: membersError } = await supabase
     .from("group_members")
-    .select("user_id, created_at")
-    .eq("group_id", groupId)
-    .order("created_at", { ascending: true });
+    .select("user_id")
+    .eq("group_id", groupId);
 
   if (membersError) {
     throw new Error(membersError.message || "멤버 목록을 불러오지 못했습니다.");
   }
 
-  const remaining = (memberRows ?? []).filter((row) => row.user_id !== userId);
+  const rows = memberRows ?? [];
+  const remaining = rows
+    .filter((row) => row.user_id !== userId)
+    .sort((a, b) => a.user_id.localeCompare(b.user_id));
 
   if (remaining.length === 0) {
-    await supabase.from("group_members").delete().eq("group_id", groupId);
+    const { error: leaveError } = await supabase
+      .from("group_members")
+      .delete()
+      .eq("group_id", groupId)
+      .eq("user_id", userId);
+    if (leaveError) {
+      throw new Error(leaveError.message || "모임 탈퇴에 실패했습니다.");
+    }
+
+    const { data: stillThere, error: recheckError } = await supabase
+      .from("group_members")
+      .select("user_id")
+      .eq("group_id", groupId)
+      .limit(1);
+    if (recheckError) {
+      throw new Error(recheckError.message || "멤버 확인에 실패했습니다.");
+    }
+
+    if ((stillThere?.length ?? 0) > 0) {
+      const { error: wipeMembersError } = await supabase
+        .from("group_members")
+        .delete()
+        .eq("group_id", groupId);
+      if (wipeMembersError) {
+        throw new Error(wipeMembersError.message || "멤버 정리에 실패했습니다.");
+      }
+    }
+
     const { error: deleteError } = await supabase.from("groups").delete().eq("id", groupId);
     if (deleteError) {
       throw new Error(deleteError.message || "모임 삭제에 실패했습니다.");
