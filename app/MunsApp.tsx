@@ -8,6 +8,7 @@ import type { Notice } from "@/lib/database.types";
 import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, removeGroupMember } from "@/lib/groups";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { withdrawUserAccount } from "@/lib/account";
+import { ensurePublicUserFromAuth } from "@/lib/authUser";
 import { parseCheerLink } from "@/lib/cheerNotifications";
 import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import { useUserPoints } from "./useUserPoints";
@@ -278,6 +279,9 @@ export default function MunsApp() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        void ensurePublicUserFromAuth(session.user);
+      }
       if (session && !hasNickname) {
         setShowOnboarding(true);
         return;
@@ -306,7 +310,12 @@ export default function MunsApp() {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("error") !== "auth-failed") return;
-    setToast("로그인에 실패했습니다. 다시 시도해 주세요.");
+    const reason = params.get("reason");
+    setToast(
+      reason
+        ? `로그인에 실패했습니다. (${reason})`
+        : "로그인에 실패했습니다. 다시 시도해 주세요.",
+    );
     params.delete("error");
     const nextQuery = params.toString();
     const nextUrl = nextQuery
