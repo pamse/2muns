@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="2müns">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117" />
+      <stop offset="100%" stop-color="#161b22" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="110" fill="url(#bg)" />
+  <text
+    x="256"
+    y="268"
+    text-anchor="middle"
+    font-family="system-ui, -apple-system, Segoe UI, sans-serif"
+    font-size="118"
+    font-weight="700"
+    fill="#ffffff"
+  >
+    2m<tspan fill="#00e599">ü</tspan>ns
+  </text>
+  <text
+    x="256"
+    y="330"
+    text-anchor="middle"
+    font-family="system-ui, -apple-system, Segoe UI, sans-serif"
+    font-size="28"
+    font-weight="600"
+    letter-spacing="4"
+    fill="#00e599"
+  >
+    66 DAYS
+  </text>
+</svg>

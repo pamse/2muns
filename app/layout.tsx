@@ -16,6 +16,15 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "2müns — 66일 습관 형성 소셜 챌린지",
   description: "66일간 함께 인증하며 습관을 만드는 비공개 소셜 챌린지, 2müns",
+  icons: {
+    icon: "/icon-512x512.png",
+    apple: "/icon-512x512.png",
+  },
+  appleWebApp: {
+    title: "2müns",
+    statusBarStyle: "black-translucent",
+    capable: true,
+  },
 };
 
 export default function RootLayout({
