@@ -23,11 +23,12 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
-      { url: "/icon-512x512.png?v=5", sizes: "512x512", type: "image/png" },
+      { url: "/icon-512x512.png?v=3", sizes: "512x512", type: "image/png" },
+      { url: "/icon-192x192.png?v=3", sizes: "192x192", type: "image/png" },
     ],
     apple: [
       {
-        url: "/apple-touch-icon.png?v=5",
+        url: "/apple-touch-icon.png?v=3",
         sizes: "180x180",
         type: "image/png",
       },
