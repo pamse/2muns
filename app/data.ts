@@ -52,6 +52,8 @@ export type Group = {
   raceStatus?: "recruiting" | "started";
   /** 레이스 공식 시작 시각 (timestamptz). 캘린더 Day 1 = 이 날짜의 KST 달력일 */
   startedAt?: string | null;
+  /** 예정 시작일 (YYYY-MM-DD, KST). 없으면 started_at만 사용 */
+  startDate?: string | null;
   /** DB `groups.status` 원본. 종료/완료 모임 제외에 사용 */
   dbStatus?: string | null;
   /** 방장 퇴장 후 24h 추가 모집 만료 시각 (ISO) */
