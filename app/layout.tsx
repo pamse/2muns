@@ -14,11 +14,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "2müns",
+  title: "2muns",
   description: "66일 습관 형성 소셜 챌린지",
+  applicationName: "2muns",
   appleWebApp: {
     capable: true,
-    title: "2müns",
+    title: "2muns",
     statusBarStyle: "black-translucent",
   },
   icons: {

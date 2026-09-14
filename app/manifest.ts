@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    short_name: "2müns",
-    name: "2müns - 66일 습관 형성",
+    short_name: "2muns",
+    name: "2muns",
     icons: [
       {
         src: "/icon-192x192.png?v=3",
