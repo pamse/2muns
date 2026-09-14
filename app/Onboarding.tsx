@@ -3,11 +3,13 @@
 
 import { useEffect, useState } from "react";
 import { Check, Loader2, Lock, ShieldCheck, Sparkles, X } from "lucide-react";
+import { signInWithOAuthProvider, type OAuthProvider } from "@/lib/auth";
 import { HABIT_CATEGORIES, TIME_SLOTS } from "./data";
 import { validateNickname } from "./useNickname";
+import { supabase } from "@/lib/supabase";
 
 type Step = 0 | 1 | 2 | 3 | 4; // 0:소셜 1:닉네임 2:습관 3:시간대 4:개인정보
-type SocialProvider = "kakao" | "google";
+type SocialProvider = OAuthProvider;
 
 function KakaoIcon() {
   return (
@@ -65,16 +67,21 @@ export function Onboarding({
   const [nickname, setNickname] = useState("");
   const [habits, setHabits] = useState<string[]>([]);
   const [slot, setSlot] = useState<string>("");
+  const [socialError, setSocialError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setStep(0);
     setLoadingProvider(null);
     setSaving(false);
     setSaveError(null);
+    setSocialError(null);
     setNickname("");
     setHabits([]);
     setSlot("");
+
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      setStep(session ? 1 : 0);
+    });
   }, [open]);
 
   if (!open) return null;
@@ -87,13 +94,17 @@ export function Onboarding({
     );
   }
 
-  function startSocial(provider: SocialProvider) {
+  async function startSocial(provider: SocialProvider) {
     if (loadingProvider) return;
     setLoadingProvider(provider);
-    window.setTimeout(() => {
+    setSocialError(null);
+    try {
+      await signInWithOAuthProvider(provider);
+    } catch (error) {
+      console.error("oauth sign-in failed", error);
+      setSocialError("소셜 로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.");
       setLoadingProvider(null);
-      setStep(1);
-    }, 500);
+    }
   }
 
   const canNext =
@@ -175,10 +186,16 @@ export function Onboarding({
               *모임 내 참여자 정보는 비공개로 안전하게 보호됩니다.
             </p>
 
+            {socialError ? (
+              <p className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {socialError}
+              </p>
+            ) : null}
+
             <div className="mt-10 space-y-3">
               <button
                 type="button"
-                onClick={() => startSocial("kakao")}
+                onClick={() => void startSocial("kakao")}
                 disabled={busy}
                 className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#FEE500] text-sm font-bold text-[#191919] transition-transform active:scale-[0.98] disabled:opacity-70"
               >
@@ -191,7 +208,7 @@ export function Onboarding({
               </button>
               <button
                 type="button"
-                onClick={() => startSocial("google")}
+                onClick={() => void startSocial("google")}
                 disabled={busy}
                 className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-gray-700 bg-[#1F222A] text-sm font-semibold text-white transition-transform active:scale-[0.98] disabled:opacity-70"
               >

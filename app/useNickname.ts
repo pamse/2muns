@@ -84,6 +84,19 @@ function getOrCreateUserId() {
 }
 
 async function resolveCanonicalUserId(nickname?: string | null) {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session?.user?.id) {
+    const authId = session.user.id;
+    try {
+      window.localStorage.setItem(USER_ID_KEY, authId);
+    } catch {
+      // localStorage 접근 불가 시 무시
+    }
+    return authId;
+  }
+
   let id = readMyUserId();
   const trimmed = nickname?.trim();
 

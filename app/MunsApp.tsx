@@ -278,6 +278,10 @@ export default function MunsApp() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session && !hasNickname) {
+        setShowOnboarding(true);
+        return;
+      }
       if (session) return;
       setJoinedGroupIds([]);
       setRoom(null);
@@ -287,7 +291,29 @@ export default function MunsApp() {
     return () => {
       subscription.unsubscribe();
     };
-  }, [refreshGroups]);
+  }, [hasNickname, refreshGroups]);
+
+  useEffect(() => {
+    if (!ready) return;
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user && !hasNickname) {
+        setShowOnboarding(true);
+      }
+    });
+  }, [ready, hasNickname]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("error") !== "auth-failed") return;
+    setToast("로그인에 실패했습니다. 다시 시도해 주세요.");
+    params.delete("error");
+    const nextQuery = params.toString();
+    const nextUrl = nextQuery
+      ? `${window.location.pathname}?${nextQuery}`
+      : window.location.pathname;
+    window.history.replaceState({}, "", nextUrl);
+  }, []);
 
   useEffect(() => {
     const channel = supabase
