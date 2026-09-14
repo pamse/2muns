@@ -9,6 +9,7 @@ import {
   isCheerNotice,
   parseCheerLink,
 } from "@/lib/cheerNotifications";
+import { formatTimeAgo } from "@/lib/utils";
 import { BottomSheet, Pill } from "./ui";
 
 function dismissedStorageKey(userId: string | null) {
@@ -38,20 +39,6 @@ function withoutDismissed(rows: Notice[], userId: string | null) {
   const dismissed = new Set(readDismissedIds(userId));
   if (dismissed.size === 0) return rows;
   return rows.filter((notice) => !dismissed.has(notice.id));
-}
-
-function formatNoticeDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString("ko-KR", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function isWarningNotice(notice: Notice) {
@@ -369,7 +356,7 @@ export function NoticesSheet({
                     </Pill>
                   ) : null}
                   <span className="text-[11px] text-gray-500">
-                    {formatNoticeDate(notice.created_at)}
+                    {formatTimeAgo(notice.created_at)}
                   </span>
                 </div>
                 <h3
