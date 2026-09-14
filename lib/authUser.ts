@@ -60,7 +60,7 @@ export function profileFromAuthUser(user: User) {
   };
 }
 
-/** 온보딩(닉네임·습관 설문) 완료 여부 — `profiles.is_completed` 대신 public.users 기준 */
+/** 온보딩(닉네임 완료 여부) — 닉네임만 있어도 로그인 완료로 간주 */
 export function isUserRegistrationComplete(
   row: {
     nickname: string | null;
@@ -70,12 +70,13 @@ export function isUserRegistrationComplete(
   if (!row) return false;
 
   const nick = (row.nickname ?? "").trim();
+  // 닉네임이 정상적으로 들어가 있기만 하면 기존 회원으로 인정하고 통과!
   if (!nick || nick === "사용자" || !NICKNAME_PATTERN.test(nick)) {
     return false;
   }
 
-  const categories = row.selected_categories;
-  return Array.isArray(categories) && categories.length > 0;
+  // 설문(카테고리) 체크 조건 제거
+  return true;
 }
 
 /** OAuth 직후 public.users 행 보장 (트리거 미적용 환경 폴백) */
