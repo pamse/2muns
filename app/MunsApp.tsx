@@ -994,6 +994,7 @@ export default function MunsApp() {
         <Onboarding
           open={showOnboarding}
           required={false}
+          currentUserId={userId}
           onClose={() => {
             setShowOnboarding(false);
             clearPendingIntent();

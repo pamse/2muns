@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isNicknameTaken } from "@/lib/nicknameCheck";
 import { Check, Loader2, Lock, ShieldCheck, Sparkles, X } from "lucide-react";
 import { signInWithOAuthProvider, type OAuthProvider } from "@/lib/auth";
 import { HABIT_CATEGORIES, TIME_SLOTS } from "./data";
@@ -10,6 +11,11 @@ import { supabase } from "@/lib/supabase";
 
 type Step = 0 | 1 | 2 | 3 | 4; // 0:소셜 1:닉네임 2:습관 3:시간대 4:개인정보
 type SocialProvider = OAuthProvider;
+
+/** 카카오 로그인 집중 테스트 기간 — Google 버튼 일시 비활성 */
+const SHOW_GOOGLE_LOGIN = false;
+
+const NICKNAME_CHECK_DEBOUNCE_MS = 400;
 
 function KakaoIcon() {
   return (
@@ -48,11 +54,13 @@ function GoogleIcon() {
 export function Onboarding({
   open,
   required = false,
+  currentUserId = null,
   onClose,
   onComplete,
 }: {
   open: boolean;
   required?: boolean;
+  currentUserId?: string | null;
   onClose: () => void;
   onComplete: (payload: {
     nickname: string;
@@ -68,6 +76,9 @@ export function Onboarding({
   const [habits, setHabits] = useState<string[]>([]);
   const [slot, setSlot] = useState<string>("");
   const [socialError, setSocialError] = useState<string | null>(null);
+  const [authUserId, setAuthUserId] = useState<string | null>(currentUserId);
+  const [nicknameTaken, setNicknameTaken] = useState(false);
+  const [nicknameChecking, setNicknameChecking] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -78,11 +89,41 @@ export function Onboarding({
     setNickname("");
     setHabits([]);
     setSlot("");
+    setNicknameTaken(false);
+    setNicknameChecking(false);
 
     void supabase.auth.getSession().then(({ data: { session } }) => {
+      setAuthUserId(session?.user?.id ?? currentUserId ?? null);
       setStep(session ? 1 : 0);
     });
-  }, [open]);
+  }, [open, currentUserId]);
+
+  useEffect(() => {
+    if (currentUserId) setAuthUserId(currentUserId);
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!open || step !== 1) return;
+
+    const trimmed = nickname.trim();
+    const formatError = validateNickname(nickname);
+    if (!trimmed || formatError) {
+      setNicknameTaken(false);
+      setNicknameChecking(false);
+      return;
+    }
+
+    setNicknameChecking(true);
+    setNicknameTaken(false);
+    const timer = window.setTimeout(() => {
+      void isNicknameTaken(trimmed, authUserId).then((taken) => {
+        setNicknameTaken(taken);
+        setNicknameChecking(false);
+      });
+    }, NICKNAME_CHECK_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [nickname, step, open, authUserId]);
 
   if (!open) return null;
 
@@ -107,13 +148,32 @@ export function Onboarding({
     }
   }
 
+  const nicknameFormatValid = validateNickname(nickname) === null;
+  const nicknameStepReady =
+    nicknameFormatValid && !nicknameTaken && !nicknameChecking;
+
   const canNext =
-    (step === 1 && validateNickname(nickname) === null) ||
+    (step === 1 && nicknameStepReady) ||
     (step === 2 && habits.length > 0) ||
     (step === 3 && slot !== "") ||
     step === 4;
 
   async function next() {
+    if (step === 1) {
+      const trimmed = nickname.trim();
+      if (validateNickname(trimmed) !== null) return;
+      setNicknameChecking(true);
+      const taken = await isNicknameTaken(trimmed, authUserId);
+      setNicknameChecking(false);
+      if (taken) {
+        setNicknameTaken(true);
+        return;
+      }
+      setNicknameTaken(false);
+      setStep(2);
+      return;
+    }
+
     if (step < 4) {
       setStep((s) => (s + 1) as Step);
       return;
@@ -186,39 +246,43 @@ export function Onboarding({
               *모임 내 참여자 정보는 비공개로 안전하게 보호됩니다.
             </p>
 
-            {socialError ? (
-              <p className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                {socialError}
-              </p>
-            ) : null}
+            <div className="flex flex-1 flex-col items-center justify-center">
+              {socialError ? (
+                <p className="mb-4 w-full max-w-xs rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                  {socialError}
+                </p>
+              ) : null}
 
-            <div className="mt-10 space-y-3">
-              <button
-                type="button"
-                onClick={() => void startSocial("kakao")}
-                disabled={busy}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#FEE500] text-sm font-bold text-[#191919] transition-transform active:scale-[0.98] disabled:opacity-70"
-              >
-                {loadingProvider === "kakao" ? (
-                  <Loader2 size={18} className="animate-spin" />
-                ) : (
-                  <KakaoIcon />
-                )}
-                카카오로 3초 만에 시작하기
-              </button>
-              <button
-                type="button"
-                onClick={() => void startSocial("google")}
-                disabled={busy}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-gray-700 bg-[#1F222A] text-sm font-semibold text-white transition-transform active:scale-[0.98] disabled:opacity-70"
-              >
-                {loadingProvider === "google" ? (
-                  <Loader2 size={18} className="animate-spin" />
-                ) : (
-                  <GoogleIcon />
-                )}
-                Google 계정으로 계속하기
-              </button>
+              <div className="w-full max-w-xs">
+                <button
+                  type="button"
+                  onClick={() => void startSocial("kakao")}
+                  disabled={busy}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#FEE500] text-sm font-bold text-[#191919] transition-transform active:scale-[0.98] disabled:opacity-70"
+                >
+                  {loadingProvider === "kakao" ? (
+                    <Loader2 size={18} className="animate-spin" />
+                  ) : (
+                    <KakaoIcon />
+                  )}
+                  카카오로 3초 만에 시작하기
+                </button>
+                {SHOW_GOOGLE_LOGIN ? (
+                  <button
+                    type="button"
+                    onClick={() => void startSocial("google")}
+                    disabled={busy}
+                    className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-gray-700 bg-[#1F222A] text-sm font-semibold text-white transition-transform active:scale-[0.98] disabled:opacity-70"
+                  >
+                    {loadingProvider === "google" ? (
+                      <Loader2 size={18} className="animate-spin" />
+                    ) : (
+                      <GoogleIcon />
+                    )}
+                    Google 계정으로 계속하기
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             <p className="mt-auto pt-10 pb-6 text-center text-xs leading-relaxed text-gray-500">
@@ -246,15 +310,28 @@ export function Onboarding({
                 autoFocus
                 placeholder="예: 습관러_01"
                 onChange={(event) => setNickname(event.target.value)}
-                className="w-full rounded-2xl border border-gray-700 bg-[#1B1D22] px-4 py-3.5 text-sm text-white outline-none placeholder:text-gray-600 focus:border-[#00FF87]"
+                aria-invalid={Boolean(nicknameError || nicknameTaken)}
+                className={`w-full rounded-2xl border bg-[#1B1D22] px-4 py-3.5 text-sm text-white outline-none placeholder:text-gray-600 ${
+                  nicknameError || nicknameTaken
+                    ? "border-red-500 focus:border-red-400"
+                    : "border-gray-700 focus:border-[#00FF87]"
+                }`}
               />
             </label>
             <p className="mt-2 text-[12px] text-gray-500">
               한글, 영문, 숫자, 밑줄(_)만 사용할 수 있습니다.
             </p>
-            {nicknameError && (
+            {nicknameError ? (
               <p className="mt-1.5 text-[12px] text-red-400">{nicknameError}</p>
-            )}
+            ) : null}
+            {!nicknameError && nicknameTaken ? (
+              <p className="mt-1.5 text-[12px] text-red-400">
+                동일한 닉네임이 이미 존재합니다
+              </p>
+            ) : null}
+            {!nicknameError && nicknameChecking && nickname.trim() ? (
+              <p className="mt-1.5 text-[12px] text-gray-500">닉네임 확인 중...</p>
+            ) : null}
             <p className="mt-5 rounded-xl border border-[#00FF87]/20 bg-[#00FF87]/10 px-3.5 py-3 text-[12px] leading-relaxed text-gray-300">
               닉네임은 14일 동안 최대 2회만 변경할 수 있습니다.
             </p>
