@@ -82,27 +82,47 @@ export function isUserRegistrationComplete(
 export async function ensurePublicUserFromAuth(user: User | null | undefined) {
   if (!user?.id) return { ok: false as const, error: "missing user" };
 
-  const profile = profileFromAuthUser(user);
-  const { error } = await supabase.from("users").upsert(
-    {
+  try {
+    // 1. 이미 users 테이블에 사용자가 존재하는지 먼저 확인
+    const { data: existingUser, error: fetchError } = await supabase
+      .from("users")
+      .select("id, nickname, avatar_url, email")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    // 2. 이미 존재하는 회원이면 기존 데이터를 덮어쓰지 않고 그대로 통과
+    if (existingUser) {
+      return { ok: true as const, profile: existingUser };
+    }
+
+    // 3. 완전히 새로운 신규 회원일 때만 최초 1회 생성 (INSERT)
+    const profile = profileFromAuthUser(user);
+    const { error: insertError } = await supabase.from("users").insert({
       id: profile.id,
       email: profile.email,
       nickname: profile.nickname,
       avatar_url: profile.avatar_url,
-    },
-    { onConflict: "id" },
-  );
-
-  if (error) {
-    console.error("ensurePublicUserFromAuth upsert failed", {
-      message: error.message,
-      code: error.code,
-      details: error.details,
-      hint: error.hint,
-      userId: user.id,
     });
-    return { ok: false as const, error: error.message };
-  }
 
-  return { ok: true as const, profile };
+    if (insertError) {
+      // 혹시 다른 곳에서 동시에 생성되어 충돌(중복 키)이 난 경우도 에러가 아니므로 정상 처리
+      if (insertError.code === "23505") {
+        return { ok: true as const, profile };
+      }
+
+      console.error("ensurePublicUserFromAuth insert failed", {
+        message: insertError.message,
+        code: insertError.code,
+        details: insertError.details,
+        hint: insertError.hint,
+        userId: user.id,
+      });
+      return { ok: false as const, error: insertError.message };
+    }
+
+    return { ok: true as const, profile };
+  } catch (err: any) {
+    console.error("ensurePublicUserFromAuth unexpected error:", err);
+    return { ok: false as const, error: err?.message ?? "unknown error" };
+  }
 }
