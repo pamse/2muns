@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Crown,
   Download,
   Loader2,
   Lock,
@@ -63,6 +64,7 @@ type Seat = {
   color: string;
   avatar?: string;
   me?: boolean;
+  isHost?: boolean;
   empty?: boolean;
   videoUrl?: string | null;
   archived?: boolean;
@@ -103,6 +105,23 @@ function VerifySpeechBubble() {
   );
 }
 
+function resolveSeatUserId(memberId: string, userId?: string | null) {
+  if (memberId === "me" && userId) return userId;
+  return memberId;
+}
+
+function isHostMember(
+  memberId: string,
+  group: Group,
+  userId?: string | null,
+) {
+  const ownerId = getGroupOwnerId(group);
+  if (!ownerId) return false;
+  const hostId = resolveSeatUserId(ownerId, userId);
+  const seatUserId = resolveSeatUserId(memberId, userId);
+  return normalizeGroupId(hostId) === normalizeGroupId(seatUserId);
+}
+
 function buildSeats(
   group: Group,
   myName: string,
@@ -136,6 +155,7 @@ function buildSeats(
       color: member.color,
       avatar: me ? myAvatar || member.avatar : member.avatar,
       me,
+      isHost: isHostMember(member.id, group, userId),
       videoUrl: null,
     };
   });
@@ -336,12 +356,23 @@ function MemberVerifyCard({
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/55 to-transparent px-2 pb-8 pt-2">
         <div className="flex max-w-full items-center gap-1.5">
-          <Avatar
-            name={seat.name}
-            color={seat.color}
-            src={seat.avatar}
-            size={22}
-          />
+          <span className="relative shrink-0">
+            <Avatar
+              name={seat.name}
+              color={seat.color}
+              src={seat.avatar}
+              size={22}
+            />
+            {seat.isHost ? (
+              <span
+                className="absolute -bottom-0.5 -right-0.5 z-10 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-black shadow ring-1 ring-black/40"
+                aria-label="방장"
+                title="방장"
+              >
+                <Crown size={9} strokeWidth={2.5} aria-hidden />
+              </span>
+            ) : null}
+          </span>
           <span className="truncate text-[11px] font-semibold text-white drop-shadow">
             {seat.name}
             {seat.me ? (
