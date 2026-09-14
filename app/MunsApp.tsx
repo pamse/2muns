@@ -6,7 +6,7 @@ import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup } from "@/lib/groups";
-import { canGuestJoinGroup } from "@/lib/groupRecruiting";
+import { canGuestJoinGroup, GROUP_STATUS_RECRUITING_SOLO } from "@/lib/groupRecruiting";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { withdrawUserAccount } from "@/lib/account";
 import { ensurePublicUserFromAuth } from "@/lib/authUser";
@@ -643,20 +643,26 @@ export default function MunsApp() {
       setGroups((prev) =>
         prev.map((item) => {
           if (item.id !== groupId) return item;
-          return {
+          const next: Group = {
             ...item,
             members: remainingMembers,
             ownerId: result.newOwnerId,
             createdBy: result.newOwnerId,
-            additionalRecruitingUntil: result.additionalRecruitingUntil,
-            dbStatus: result.additionalRecruitingUntil ? "active_recruiting" : item.dbStatus,
           };
+          if (result.soloRecruit) {
+            next.dbStatus = GROUP_STATUS_RECRUITING_SOLO;
+            next.filter = "joinable";
+            next.raceStatus = item.startedAt ? "started" : "recruiting";
+          }
+          return next;
         }),
       );
       setToast(
-        owner
-          ? "방장 권한을 넘기고 퇴장했습니다. 24시간 추가 모집이 시작됩니다."
-          : "챌린지에서 퇴장했습니다",
+        result.soloRecruit
+          ? "1명만 남아 특별 추가 모집이 시작됐어요. 모집 중 탭에서 탑승을 기다려 주세요."
+          : owner
+            ? "방장 권한을 넘기고 퇴장했습니다."
+            : "챌린지에서 퇴장했습니다",
       );
     } else {
       setGroups((prev) =>

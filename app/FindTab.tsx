@@ -13,7 +13,12 @@ import {
   type Group,
   type GroupFilter,
 } from "./data";
-import { formatRecruitingTimeLeft, isMidRaceJoinOpen } from "@/lib/groupRecruiting";
+import {
+  isJoinableTabGroup,
+  isRunningTabGroup,
+  isSoloEmergencyRecruit,
+  sortJoinableTabGroups,
+} from "@/lib/groupRecruiting";
 import { MidRaceJoinSheet } from "./MidRaceJoinSheet";
 import { RunningGroupPeekSheet } from "./RunningGroupPeekSheet";
 import { groupThumbnailSrc } from "@/lib/categories";
@@ -134,27 +139,24 @@ function GroupCard({
   group,
   isMember,
   peekMode = false,
-  midRaceJoin = false,
+  soloEmergency = false,
   onOpen,
 }: {
   group: Group;
   isMember: boolean;
   peekMode?: boolean;
-  midRaceJoin?: boolean;
+  soloEmergency?: boolean;
   onOpen: (g: Group) => void;
 }) {
-  const isJoinable = group.filter === "joinable" || midRaceJoin;
+  const isJoinable = group.filter === "joinable";
   const full = group.members.length >= group.capacity;
-  const locked = !isJoinable && !isMember && !peekMode && !midRaceJoin;
-  const recruitingLeft = midRaceJoin
-    ? formatRecruitingTimeLeft(group.additionalRecruitingUntil)
-    : null;
+  const locked = !isJoinable && !isMember && !peekMode;
   const actionLabel = isMember
     ? "입장하기"
-    : midRaceJoin
+    : soloEmergency
       ? full
         ? "모집 마감"
-        : "합류하기"
+        : "탑승하기"
       : isJoinable
         ? full
           ? "모집 마감"
@@ -163,8 +165,16 @@ function GroupCard({
           ? "규칙 엿보기"
           : null;
   const actionMuted = Boolean(actionLabel === "모집 마감");
+  const memberLabel = `${group.members.length}/${group.capacity}명`;
   return (
-    <Card onClick={() => onOpen(group)} className="overflow-hidden p-4">
+    <Card
+      onClick={() => onOpen(group)}
+      className={`overflow-hidden p-4 ${
+        soloEmergency
+          ? "border border-amber-500/50 shadow-[0_0_24px_rgba(245,158,11,0.18)]"
+          : ""
+      }`}
+    >
       <div className="flex gap-3.5">
         <GroupThumb src={groupThumbnailSrc(group)} alt={group.name} size={64} />
 
@@ -184,10 +194,10 @@ function GroupCard({
             {isMember ? (
               <Pill tone="accent">참여 중</Pill>
             ) : null}
-            {midRaceJoin ? (
-              <Pill tone="accent">
-                <Zap size={12} /> 24시간 번개 탑승
-              </Pill>
+            {soloEmergency ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[11px] font-bold text-amber-300">
+                <Zap size={12} className="text-amber-400" /> 긴급 탑승 ({memberLabel})
+              </span>
             ) : isJoinable ? (
               <Pill tone="accent">
                 <Users size={12} /> 모집 중
@@ -197,15 +207,12 @@ function GroupCard({
                 <Flame size={12} /> D-{group.total - group.day} 달리는 중
               </Pill>
             )}
-            {recruitingLeft ? (
-              <Pill tone="warn">⏳ {recruitingLeft} 남음</Pill>
-            ) : null}
             {full && <Pill tone="danger">정원 마감</Pill>}
           </div>
         </div>
       </div>
 
-      {!isJoinable && (midRaceJoin || group.filter === "ongoing") && (
+      {(soloEmergency || (!isJoinable && group.filter === "ongoing")) && group.day > 0 && (
         <div className="mt-3">
           <div className="mb-1 flex justify-between text-[11px] text-gray-500">
             <span>{group.day}일차 진행 중</span>
@@ -228,7 +235,11 @@ function GroupCard({
         {actionLabel ? (
           <span
             className={`text-xs font-semibold ${
-              actionMuted ? "text-gray-500" : "text-[#00FF87]"
+              actionMuted
+                ? "text-gray-500"
+                : soloEmergency
+                  ? "text-amber-300"
+                  : "text-[#00FF87]"
             }`}
           >
             {actionLabel}
@@ -283,12 +294,11 @@ export function FindTab({
     );
   }, [groups, joinedGroupIds, isLoggedIn, myUserId, nickname]);
   const running = useMemo(
-    () => groups.filter((g) => g.filter === "ongoing"),
+    () => groups.filter((g) => isRunningTabGroup(g)),
     [groups],
   );
   const joinable = useMemo(
-    () =>
-      groups.filter((g) => g.filter === "joinable" || isMidRaceJoinOpen(g)),
+    () => sortJoinableTabGroups(groups.filter((g) => isJoinableTabGroup(g))),
     [groups],
   );
   const filtered =
@@ -317,14 +327,10 @@ export function FindTab({
         isGroupMember(g, { userId: myUserId, nickname }));
 
     if (filter === "ongoing" && !member) {
-      if (isMidRaceJoinOpen(g)) {
-        setMidRaceJoinGroup(g);
-        return;
-      }
       setPeekGroup(g);
       return;
     }
-    if (filter === "joinable" && !member && isMidRaceJoinOpen(g)) {
+    if (filter === "joinable" && !member && isSoloEmergencyRecruit(g)) {
       setMidRaceJoinGroup(g);
       return;
     }
@@ -387,8 +393,8 @@ export function FindTab({
               (mine.some((item) => item.id === g.id) ||
                 isGroupMember(g, { userId: myUserId, nickname }))
             }
-            peekMode={filter === "ongoing" && !isMidRaceJoinOpen(g)}
-            midRaceJoin={isMidRaceJoinOpen(g)}
+            peekMode={filter === "ongoing"}
+            soloEmergency={isSoloEmergencyRecruit(g)}
             onOpen={handleOpenGroup}
           />
         ))}

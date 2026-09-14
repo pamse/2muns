@@ -1,43 +1,48 @@
 import type { Group } from "@/app/data";
-import { hasRaceStarted } from "@/app/data";
 
-const MS_24H = 24 * 60 * 60 * 1000;
+/** DB `groups.status` — 1명만 남은 뒤 특별 추가 모집(레이스 started_at 유지) */
+export const GROUP_STATUS_RECRUITING_SOLO = "recruiting_solo";
 
-export function isAdditionalRecruitingActive(
-  group: Pick<Group, "additionalRecruitingUntil">,
-  now = Date.now(),
-): boolean {
-  const raw = group.additionalRecruitingUntil;
-  if (!raw) return false;
-  const until = new Date(raw).getTime();
-  return Number.isFinite(until) && until > now;
+export function isSoloEmergencyRecruit(group: Group): boolean {
+  const status = (group.dbStatus ?? "").trim().toLowerCase();
+  if (status === GROUP_STATUS_RECRUITING_SOLO) {
+    return true;
+  }
+  return (
+    status === "recruiting" &&
+    Boolean(group.startedAt) &&
+    group.members.length === 1
+  );
 }
 
-/** 레이스 진행 중 + 24h 추가 모집 창 */
-export function isMidRaceJoinOpen(group: Group, now = Date.now()): boolean {
-  return hasRaceStarted(group) && isAdditionalRecruitingActive(group, now);
+/** @deprecated use isSoloEmergencyRecruit */
+export function isMidRaceJoinOpen(group: Group): boolean {
+  return isSoloEmergencyRecruit(group);
 }
 
-export function additionalRecruitingEndsAt(now = Date.now()) {
-  return new Date(now + MS_24H).toISOString();
+/** 모집 중 탭 노출 대상 */
+export function isJoinableTabGroup(group: Group): boolean {
+  return group.filter === "joinable";
 }
 
-export function formatRecruitingTimeLeft(
-  untilIso: string | null | undefined,
-  now = Date.now(),
-): string | null {
-  if (!untilIso) return null;
-  const ms = new Date(untilIso).getTime() - now;
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  const totalMin = Math.floor(ms / 60_000);
-  const hours = Math.floor(totalMin / 60);
-  const minutes = totalMin % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+/** 달리는 중 탭: 2명 이상 순항 중 */
+export function isRunningTabGroup(group: Group): boolean {
+  return group.filter === "ongoing" && group.members.length >= 2;
 }
 
-export function canGuestJoinGroup(group: Group, isMember: boolean, now = Date.now()): boolean {
+export function sortJoinableTabGroups(list: Group[]): Group[] {
+  return [...list].sort((a, b) => {
+    const aSolo = isSoloEmergencyRecruit(a) ? 1 : 0;
+    const bSolo = isSoloEmergencyRecruit(b) ? 1 : 0;
+    if (aSolo !== bSolo) {
+      return bSolo - aSolo;
+    }
+    return 0;
+  });
+}
+
+export function canGuestJoinGroup(group: Group, isMember: boolean): boolean {
   if (isMember) return true;
   if (group.filter === "joinable") return true;
-  if (isMidRaceJoinOpen(group, now)) return true;
   return false;
 }

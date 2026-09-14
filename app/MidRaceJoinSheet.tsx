@@ -5,7 +5,6 @@ import { createPortal } from "react-dom";
 import { Flame, X, Zap } from "lucide-react";
 import type { Group } from "./data";
 import { groupThumbnailSrc } from "@/lib/categories";
-import { formatRecruitingTimeLeft } from "@/lib/groupRecruiting";
 import { GroupThumb, Pill } from "./ui";
 
 export function MidRaceJoinSheet({
@@ -22,24 +21,10 @@ export function MidRaceJoinSheet({
   joining?: boolean;
 }) {
   const [host, setHost] = useState<HTMLElement | null>(null);
-  const [timeLeft, setTimeLeft] = useState<string | null>(null);
 
   useEffect(() => {
     setHost(document.getElementById("muns-frame") ?? document.body);
   }, []);
-
-  useEffect(() => {
-    if (!open || !group?.additionalRecruitingUntil) {
-      setTimeLeft(null);
-      return;
-    }
-    const tick = () => {
-      setTimeLeft(formatRecruitingTimeLeft(group.additionalRecruitingUntil));
-    };
-    tick();
-    const timer = window.setInterval(tick, 30_000);
-    return () => window.clearInterval(timer);
-  }, [open, group?.additionalRecruitingUntil]);
 
   if (!open || !group || !host) return null;
 
@@ -58,21 +43,20 @@ export function MidRaceJoinSheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby="mid-race-join-title"
-        className="relative z-10 flex max-h-[min(88dvh,560px)] w-full flex-col rounded-t-3xl border-t border-gray-800 bg-[#1B1D22] shadow-[0_-12px_40px_rgba(0,0,0,0.45)] animate-[sheetUp_0.28s_ease-out]"
+        className="relative z-10 flex max-h-[min(88dvh,560px)] w-full flex-col rounded-t-3xl border-t border-amber-500/40 bg-[#1B1D22] shadow-[0_-12px_40px_rgba(0,0,0,0.45)] animate-[sheetUp_0.28s_ease-out]"
       >
         <div className="shrink-0 px-5 pt-3 pb-2">
           <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-gray-600" aria-hidden />
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Pill tone="accent">
-                <Zap size={12} /> 24시간 번개 탑승
-              </Pill>
-              {timeLeft ? (
-                <span className="text-[12px] font-semibold text-amber-300">⏳ {timeLeft} 남음</span>
-              ) : null}
               <Pill tone="warn">
-                <Flame size={12} /> D-{daysLeft} · {group.day}일차
+                <Zap size={12} /> 긴급 탑승 · 24시간 추가 모집
               </Pill>
+              {group.day > 0 ? (
+                <Pill tone="warn">
+                  <Flame size={12} /> D-{daysLeft} · {group.day}일차
+                </Pill>
+              ) : null}
             </div>
             <button
               type="button"
@@ -98,12 +82,13 @@ export function MidRaceJoinSheet({
             </div>
           </div>
           <p className="mt-5 text-[14px] leading-relaxed text-gray-200">
-            현재 {group.day}일차 달리는 중인 열정적인 방이에요! 지금 탑승해 남은 일정을 함께
-            완주하세요.
+            현재 {group.day > 0 ? `${group.day}일차 ` : ""}
+            달리는 중인 열정적인 방이에요! 지금 탑승해 남은 일정을 함께 완주하세요.
           </p>
           <p className="mt-3 text-[13px] leading-relaxed text-gray-400">{group.intro}</p>
           <p className="mt-4 text-center text-[12px] text-gray-500">
-            {group.members.length}/{group.capacity}명 · 빈자리 {Math.max(0, group.capacity - group.members.length)}석
+            {group.members.length}/{group.capacity}명 · 빈자리{" "}
+            {Math.max(0, group.capacity - group.members.length)}석
           </p>
         </div>
 
@@ -115,10 +100,10 @@ export function MidRaceJoinSheet({
             className={`w-full rounded-xl py-3.5 text-sm font-bold transition-transform active:scale-[0.98] ${
               full || joining
                 ? "cursor-not-allowed bg-gray-700 text-gray-400"
-                : "bg-[#00FF87] text-black"
+                : "bg-amber-400 text-black"
             }`}
           >
-            {joining ? "합류하는 중..." : full ? "정원 마감" : "합류하기"}
+            {joining ? "탑승하는 중..." : full ? "정원 마감" : "탑승하기"}
           </button>
         </div>
         <style>{`@keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
