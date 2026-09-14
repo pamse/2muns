@@ -309,19 +309,30 @@ export default function MunsApp() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
-    if (params.get("error") !== "auth-failed") return;
-    const reason = params.get("reason");
-    setToast(
-      reason
-        ? `로그인에 실패했습니다. (${reason})`
-        : "로그인에 실패했습니다. 다시 시도해 주세요.",
-    );
-    params.delete("error");
+
+    if (params.get("onboarding") === "1") {
+      setShowOnboarding(true);
+      params.delete("onboarding");
+    }
+
+    if (params.get("error") === "auth-failed") {
+      const reason = params.get("reason");
+      setToast(
+        reason
+          ? `로그인에 실패했습니다. (${reason})`
+          : "로그인에 실패했습니다. 다시 시도해 주세요.",
+      );
+      params.delete("error");
+      params.delete("reason");
+    }
+
     const nextQuery = params.toString();
     const nextUrl = nextQuery
       ? `${window.location.pathname}?${nextQuery}`
       : window.location.pathname;
-    window.history.replaceState({}, "", nextUrl);
+    if (nextUrl !== `${window.location.pathname}${window.location.search}`) {
+      window.history.replaceState({}, "", nextUrl);
+    }
   }, []);
 
   useEffect(() => {

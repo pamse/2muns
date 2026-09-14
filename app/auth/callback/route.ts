@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { profileFromAuthUser } from "@/lib/authUser";
+import {
+  isUserRegistrationComplete,
+  profileFromAuthUser,
+} from "@/lib/authUser";
 import { createSupabaseRouteHandlerClient } from "@/lib/supabase/server";
 
 function safeNextPath(raw: string | null) {
@@ -15,6 +18,26 @@ function authFailedRedirect(origin: string, reason: string) {
   url.searchParams.set("error", "auth-failed");
   url.searchParams.set("reason", reason);
   return NextResponse.redirect(url.toString());
+}
+
+function redirectWithCookies(from: NextResponse, target: string | URL) {
+  const to = NextResponse.redirect(target);
+  from.cookies.getAll().forEach(({ name, value, ...options }) => {
+    to.cookies.set(name, value, options);
+  });
+  return to;
+}
+
+function postAuthRedirectUrl(origin: string, next: string, registered: boolean) {
+  if (registered) {
+    return `${origin}${next}`;
+  }
+  const url = new URL("/", origin);
+  url.searchParams.set("onboarding", "1");
+  if (next !== "/") {
+    url.searchParams.set("next", next);
+  }
+  return url.toString();
 }
 
 export async function GET(request: Request) {
@@ -38,8 +61,8 @@ export async function GET(request: Request) {
     return authFailedRedirect(origin, "missing-code");
   }
 
-  const successRedirect = NextResponse.redirect(`${origin}${next}`);
-  const supabase = await createSupabaseRouteHandlerClient(successRedirect);
+  const cookieResponse = NextResponse.redirect(`${origin}/`);
+  const supabase = await createSupabaseRouteHandlerClient(cookieResponse);
 
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
   if (error) {
@@ -58,28 +81,46 @@ export async function GET(request: Request) {
     return authFailedRedirect(origin, "missing-user");
   }
 
-  const profile = profileFromAuthUser(user);
-  const { error: upsertError } = await supabase.from("users").upsert(
-    {
-      id: profile.id,
-      email: profile.email,
-      nickname: profile.nickname,
-      avatar_url: profile.avatar_url,
-    },
-    { onConflict: "id" },
-  );
+  const { data: existingUser, error: profileError } = await supabase
+    .from("users")
+    .select("id, nickname, selected_categories")
+    .eq("id", user.id)
+    .maybeSingle();
 
-  if (upsertError) {
-    console.error("auth callback users upsert failed:", {
-      message: upsertError.message,
-      code: upsertError.code,
-      details: upsertError.details,
-      hint: upsertError.hint,
+  if (profileError) {
+    console.error("auth callback users select failed:", {
+      message: profileError.message,
+      code: profileError.code,
       userId: user.id,
-      profile,
     });
-    // 세션은 유효 — 온보딩 단계에서 프로필 재저장 가능
   }
 
-  return successRedirect;
+  let userRow: {
+    nickname: string | null;
+    selected_categories: string[] | null;
+  } | null = existingUser;
+
+  if (!existingUser) {
+    const profile = profileFromAuthUser(user);
+    const { data: newUser, error: insertError } = await supabase
+      .from("users")
+      .insert({
+        id: profile.id,
+        email: profile.email,
+        nickname: profile.nickname,
+        avatar_url: profile.avatar_url,
+      })
+      .select("nickname, selected_categories")
+      .single();
+
+    if (insertError) {
+      console.error("auth callback users insert failed:", insertError);
+    } else {
+      userRow = newUser;
+    }
+  }
+
+  const registered = isUserRegistrationComplete(userRow ?? null);
+  const target = postAuthRedirectUrl(origin, next, registered);
+  return redirectWithCookies(cookieResponse, target);
 }

@@ -60,6 +60,24 @@ export function profileFromAuthUser(user: User) {
   };
 }
 
+/** 온보딩(닉네임·습관 설문) 완료 여부 — `profiles.is_completed` 대신 public.users 기준 */
+export function isUserRegistrationComplete(
+  row: {
+    nickname: string | null;
+    selected_categories: string[] | null;
+  } | null,
+): boolean {
+  if (!row) return false;
+
+  const nick = (row.nickname ?? "").trim();
+  if (!nick || nick === "사용자" || !NICKNAME_PATTERN.test(nick)) {
+    return false;
+  }
+
+  const categories = row.selected_categories;
+  return Array.isArray(categories) && categories.length > 0;
+}
+
 /** OAuth 직후 public.users 행 보장 (트리거 미적용 환경 폴백) */
 export async function ensurePublicUserFromAuth(user: User | null | undefined) {
   if (!user?.id) return { ok: false as const, error: "missing user" };
