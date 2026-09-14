@@ -8,10 +8,10 @@
   <rect width="512" height="512" rx="110" fill="url(#bg)" />
   <text
     x="256"
-    y="268"
+    y="248"
     text-anchor="middle"
     font-family="system-ui, -apple-system, Segoe UI, sans-serif"
-    font-size="118"
+    font-size="132"
     font-weight="700"
     fill="#ffffff"
   >
@@ -19,10 +19,10 @@
   </text>
   <text
     x="256"
-    y="330"
+    y="312"
     text-anchor="middle"
     font-family="system-ui, -apple-system, Segoe UI, sans-serif"
-    font-size="28"
+    font-size="26"
     font-weight="600"
     letter-spacing="4"
     fill="#00e599"
