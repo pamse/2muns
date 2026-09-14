@@ -17,6 +17,9 @@ export async function signInWithOAuthProvider(provider: OAuthProvider) {
     options: {
       redirectTo,
       skipBrowserRedirect: false,
+      ...(provider === "kakao"
+        ? { queryParams: { prompt: "select_account" } }
+        : {}),
     },
   });
   if (error) {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { isUserRegistrationComplete } from "@/lib/authUser";
 import { supabase } from "@/lib/supabase";
 import { clearAllJoinedGroupCaches } from "@/lib/groups";
 import { dispatchProfileUpdated, syncProfileToSupabase } from "@/lib/profile";
@@ -234,11 +235,62 @@ export function useNickname() {
   const [hasNickname, setHasNickname] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
 
+  const hydrateRegisteredProfile = useCallback(async (authUserId: string) => {
+    const { data: row, error } = await supabase
+      .from("users")
+      .select("nickname, selected_categories, nickname_updated_at")
+      .eq("id", authUserId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("hydrateRegisteredProfile failed", error);
+      return false;
+    }
+    if (!isUserRegistrationComplete(row)) {
+      return false;
+    }
+
+    const trimmed = (row!.nickname ?? "").trim();
+    const updatedAt = row!.nickname_updated_at ?? new Date().toISOString();
+    const log = readLog();
+    persistLocal(trimmed, updatedAt, log);
+    setNickname(trimmed);
+    setHasNickname(true);
+    setUserId(authUserId);
+    setChangeLog(log);
+    try {
+      window.localStorage.setItem(USER_ID_KEY, authUserId);
+    } catch {
+      // localStorage 접근 불가 시 무시
+    }
+    await syncProfileToSupabase({ userId: authUserId, nickname: trimmed });
+    dispatchProfileUpdated({ userId: authUserId, nickname: trimmed });
+    return true;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const authUserId = session?.user?.id ?? null;
+
+        if (authUserId && (await hydrateRegisteredProfile(authUserId))) {
+          return;
+        }
+
+        if (authUserId && !cancelled) {
+          setUserId(authUserId);
+          try {
+            window.localStorage.setItem(USER_ID_KEY, authUserId);
+          } catch {
+            // localStorage 접근 불가 시 무시
+          }
+        }
+
         const stored = window.localStorage.getItem(NICKNAME_KEY)?.trim() || "";
         if (stored) {
           setNickname(stored);
@@ -250,7 +302,7 @@ export function useNickname() {
           if (!cancelled) {
             setUserId(id);
           }
-        } else if (!cancelled) {
+        } else if (!authUserId && !cancelled) {
           setUserId(null);
         }
       } catch {
@@ -267,7 +319,7 @@ export function useNickname() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [hydrateRegisteredProfile]);
 
   const remaining = remainingNicknameChanges(changeLog);
   const lockDays = nicknameLockDaysLeft(changeLog);
@@ -369,5 +421,6 @@ export function useNickname() {
     changeNickname,
     clearSession,
     resetLocalSession,
+    hydrateRegisteredProfile,
   };
 }

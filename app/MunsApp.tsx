@@ -158,6 +158,7 @@ export default function MunsApp() {
     changeNickname,
     clearSession,
     resetLocalSession,
+    hydrateRegisteredProfile,
   } = useNickname();
   const { notices, loading: noticesLoading, error: noticesError, refresh: refreshNotices, prependNotice, removeNotice } = useActiveNotices(userId, ready);
   const {
@@ -275,18 +276,42 @@ export default function MunsApp() {
     void refreshGroups();
   }, [ready, userId, nickname, hasNickname, refreshGroups]);
 
+  const reconcileOnboarding = useCallback(
+    async (options?: { openLoginWhenSignedOut?: boolean }) => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.user) {
+        setShowOnboarding(Boolean(options?.openLoginWhenSignedOut));
+        return;
+      }
+
+      if (hasNickname && userId === session.user.id) {
+        setShowOnboarding(false);
+        return;
+      }
+
+      if (await hydrateRegisteredProfile(session.user.id)) {
+        setShowOnboarding(false);
+        return;
+      }
+
+      setShowOnboarding(true);
+    },
+    [hasNickname, hydrateRegisteredProfile, userId],
+  );
+
   useEffect(() => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         void ensurePublicUserFromAuth(session.user);
-      }
-      if (session && !hasNickname) {
-        setShowOnboarding(true);
+        void reconcileOnboarding();
         return;
       }
-      if (session) return;
+      setShowOnboarding(false);
       setJoinedGroupIds([]);
       setRoom(null);
       setFilter((current) => (current === "mine" ? "joinable" : current));
@@ -295,23 +320,19 @@ export default function MunsApp() {
     return () => {
       subscription.unsubscribe();
     };
-  }, [hasNickname, refreshGroups]);
+  }, [reconcileOnboarding, refreshGroups]);
 
   useEffect(() => {
     if (!ready) return;
-    void supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user && !hasNickname) {
-        setShowOnboarding(true);
-      }
-    });
-  }, [ready, hasNickname]);
+    void reconcileOnboarding();
+  }, [ready, reconcileOnboarding]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
 
     if (params.get("onboarding") === "1") {
-      setShowOnboarding(true);
+      void reconcileOnboarding();
       params.delete("onboarding");
     }
 
@@ -998,7 +1019,7 @@ export default function MunsApp() {
           }}
           onLogin={() => {
             setShowLoginGate(false);
-            setShowOnboarding(true);
+            void reconcileOnboarding({ openLoginWhenSignedOut: true });
           }}
         />
 
