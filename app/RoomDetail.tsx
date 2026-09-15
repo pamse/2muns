@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   Camera,
@@ -50,6 +51,18 @@ import {
   createCheerNotice,
   revokeCheerNotice,
 } from "@/lib/cheerNotifications";
+import { GroupMembersSheet } from "./GroupMembersSheet";
+import {
+  BlockConfirmModal,
+  ReportUserModal,
+  UserActionSheet,
+} from "./UserModerationUi";
+import {
+  filterGroupMembers,
+  filterVerificationsByBlock,
+  submitUserReport,
+  type ReportReason,
+} from "@/lib/moderation";
 import {
   awardDailyVerificationPoints,
   awardEmojiFeedbackPoints,
@@ -939,6 +952,8 @@ export function RoomDetail({
   onPointsEarned,
   onCheerNotice,
   onToast,
+  blockedUserIds = new Set<string>(),
+  onBlockUser,
 }: {
   group: Group;
   onBack: () => void;
@@ -960,7 +975,10 @@ export function RoomDetail({
   onPointsEarned?: (result: PointAwardResult) => void;
   onCheerNotice?: (notice: Notice) => void;
   onToast?: (message: string) => void;
+  blockedUserIds?: ReadonlySet<string>;
+  onBlockUser?: (blockedUserId: string) => void | Promise<void>;
 }) {
+  const router = useRouter();
   const [cameraOpen, setCameraOpen] = useState(false);
   const [dayRows, setDayRows] = useState<Verification[]>([]);
   const [cheerMap, setCheerMap] = useState<Record<string, CheerSummary>>({});
@@ -973,7 +991,17 @@ export function RoomDetail({
   const [forcedStarted, setForcedStarted] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"leave" | "delete" | null>(null);
   const [showGroupRules, setShowGroupRules] = useState(false);
+  const [showMembersSheet, setShowMembersSheet] = useState(false);
+  const [actionMember, setActionMember] = useState<Member | null>(null);
+  const [memberActionOpen, setMemberActionOpen] = useState(false);
+  const [blockConfirmOpen, setBlockConfirmOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [modBusy, setModBusy] = useState(false);
   const [busy, setBusy] = useState(false);
+  const displayGroup = useMemo(
+    () => filterGroupMembers(group, blockedUserIds),
+    [group, blockedUserIds],
+  );
   const currentDay = Math.max(
     1,
     group.startedAt
@@ -1183,7 +1211,9 @@ export function RoomDetail({
     setFeedError(null);
     void fetchVerifications(group.id, challengeDay)
       .then((rows) => {
-        if (!cancelled) setDayRows(rows);
+        if (!cancelled) {
+          setDayRows(filterVerificationsByBlock(rows, blockedUserIds));
+        }
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -1199,7 +1229,7 @@ export function RoomDetail({
     return () => {
       cancelled = true;
     };
-  }, [group.id, challengeDay, started]);
+  }, [group.id, challengeDay, started, blockedUserIds]);
 
   const refreshCheerMap = useCallback(() => {
     if (!started) return;
@@ -1239,13 +1269,55 @@ export function RoomDetail({
   const seats = useMemo(
     () =>
       seatsForChallengeDay(
-        buildSeats(group, nickname || "나", myAvatar || ME_AVATAR, userId),
+        buildSeats(displayGroup, nickname || "나", myAvatar || ME_AVATAR, userId),
         challengeDay,
         currentDay,
         dayRows,
       ),
-    [group, nickname, myAvatar, userId, challengeDay, currentDay, dayRows],
+    [displayGroup, nickname, myAvatar, userId, challengeDay, currentDay, dayRows],
   );
+
+  function openMemberProfile(member: Member) {
+    const id = normalizeGroupId(member.id);
+    if (!id || id === "me") return;
+    setShowMembersSheet(false);
+    router.push(`/profile/${encodeURIComponent(id)}`);
+  }
+
+  async function handleConfirmBlockMember() {
+    if (!actionMember?.id) return;
+    setModBusy(true);
+    try {
+      await onBlockUser?.(actionMember.id);
+      setBlockConfirmOpen(false);
+      setActionMember(null);
+      onToast?.("사용자를 차단했습니다.");
+    } finally {
+      setModBusy(false);
+    }
+  }
+
+  async function handleReportMember(reason: ReportReason, detail?: string) {
+    if (!actionMember?.id) return;
+    setModBusy(true);
+    try {
+      const text = reason === "기타" && detail ? `${reason}: ${detail}` : reason;
+      const ok = await submitUserReport({
+        reporterId: userId ?? null,
+        reportedUserId: actionMember.id,
+        reason: text,
+      });
+      setReportOpen(false);
+      setActionMember(null);
+      onToast?.(
+        ok
+          ? "신고가 접수되었습니다. 24시간 내 검토됩니다."
+          : "신고 접수에 실패했습니다.",
+      );
+    } finally {
+      setModBusy(false);
+    }
+  }
   const doneCount = seats.filter((seat) => seat.videoUrl || seat.verifiedAtLabel).length;
 
   function selectDay(nextWeek: number, nextOffset: number) {
@@ -1577,6 +1649,14 @@ export function RoomDetail({
             모임 소개 및 규칙
           </button>
         </div>
+        <button
+          type="button"
+          aria-label="멤버 목록"
+          onClick={() => setShowMembersSheet(true)}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/5 hover:text-white"
+        >
+          <Users size={20} />
+        </button>
       </header>
 
       {startBanner ? (
@@ -1699,6 +1779,44 @@ export function RoomDetail({
         open={showGroupRules}
         onClose={() => setShowGroupRules(false)}
       />
+
+      <GroupMembersSheet
+        open={showMembersSheet}
+        onClose={() => setShowMembersSheet(false)}
+        group={group}
+        viewerUserId={userId}
+        blockedUserIds={blockedUserIds}
+        onMemberAction={(member) => {
+          setActionMember(member);
+          setMemberActionOpen(true);
+        }}
+      />
+
+      {actionMember ? (
+        <>
+          <UserActionSheet
+            open={memberActionOpen}
+            nickname={actionMember.name}
+            onClose={() => setMemberActionOpen(false)}
+            onViewProfile={() => openMemberProfile(actionMember)}
+            onBlock={() => setBlockConfirmOpen(true)}
+            onReport={() => setReportOpen(true)}
+          />
+          <BlockConfirmModal
+            open={blockConfirmOpen}
+            onClose={() => !modBusy && setBlockConfirmOpen(false)}
+            onConfirm={() => void handleConfirmBlockMember()}
+            busy={modBusy}
+          />
+          <ReportUserModal
+            open={reportOpen}
+            nickname={actionMember.name}
+            onClose={() => !modBusy && setReportOpen(false)}
+            onSubmit={(reason, detail) => void handleReportMember(reason, detail)}
+            busy={modBusy}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

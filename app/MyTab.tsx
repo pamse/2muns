@@ -55,6 +55,11 @@ import {
 } from "@/lib/dates";
 import { fetchLiveRanking, type RankUser } from "@/lib/ranking";
 import { fetchUserVerificationDays } from "@/lib/verifications";
+import {
+  BIO_MAX_LENGTH,
+  fetchUserBio,
+  updateUserBio,
+} from "@/lib/moderation";
 import { POINTS_UPDATED_EVENT } from "@/lib/points";
 import {
   awardCompletionPoints,
@@ -686,6 +691,11 @@ export function MyTab({
   const [editNickname, setEditNickname] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [savingNickname, setSavingNickname] = useState(false);
+  const [bio, setBio] = useState("");
+  const [showBioEdit, setShowBioEdit] = useState(false);
+  const [editBio, setEditBio] = useState("");
+  const [savingBio, setSavingBio] = useState(false);
+  const [bioError, setBioError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
@@ -720,6 +730,14 @@ export function MyTab({
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [started, selected?.id]);
+
+  useEffect(() => {
+    if (!myUserId) {
+      setBio("");
+      return;
+    }
+    void fetchUserBio(myUserId).then(setBio);
+  }, [myUserId]);
 
   useEffect(() => {
     if (!myUserId) {
@@ -982,6 +1000,29 @@ export function MyTab({
     }
   }
 
+  function openBioEditor() {
+    setEditBio(bio);
+    setBioError(null);
+    setShowBioEdit(true);
+  }
+
+  async function saveBioEdit() {
+    if (!myUserId) return;
+    setSavingBio(true);
+    setBioError(null);
+    try {
+      const saved = await updateUserBio(myUserId, editBio);
+      setBio(saved);
+      setShowBioEdit(false);
+    } catch (error) {
+      setBioError(
+        error instanceof Error ? error.message : "한 줄 소개를 저장하지 못했습니다.",
+      );
+    } finally {
+      setSavingBio(false);
+    }
+  }
+
   async function saveNicknameEdit() {
     const errorMessage = validateNickname(editNickname);
     if (errorMessage) {
@@ -1029,13 +1070,25 @@ export function MyTab({
             </button>
             {selected && started ? <WarningBadge miss={progress?.missCount ?? 0} /> : null}
           </div>
-          <p className="text-[13px] text-gray-400">
-            {selected
-              ? recruiting
-                ? `${selected.name} · 멤버 대기 중`
-                : `${selected.name} 참여 중`
-              : "참여 중인 챌린지가 없어요"}
-          </p>
+          <div className="mt-1 flex items-start gap-1">
+            <button
+              type="button"
+              onClick={openBioEditor}
+              className="min-w-0 flex-1 text-left text-[13px] leading-snug text-gray-400 transition-colors hover:text-gray-300"
+            >
+              {bio.trim()
+                ? bio
+                : "나를 소개하는 한 줄을 남겨보세요"}
+            </button>
+            <button
+              type="button"
+              onClick={openBioEditor}
+              aria-label="한 줄 소개 수정"
+              className="mt-0.5 shrink-0 rounded-full p-1 text-gray-500 hover:bg-white/5 hover:text-white"
+            >
+              <Pencil size={12} strokeWidth={2.2} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1310,6 +1363,41 @@ export function MyTab({
         daysLeft={nicknameLockDays}
         onClose={() => setShowNickLimit(false)}
       />
+
+      <BottomSheet
+        open={showBioEdit}
+        onClose={() => !savingBio && setShowBioEdit(false)}
+        title="한 줄 소개"
+      >
+        <label className="block">
+          <span className="sr-only">한 줄 소개</span>
+          <input
+            type="text"
+            value={editBio}
+            maxLength={BIO_MAX_LENGTH}
+            autoComplete="off"
+            autoFocus
+            placeholder="나를 소개하는 한 줄을 남겨보세요"
+            onChange={(event) => {
+              setEditBio(event.target.value.slice(0, BIO_MAX_LENGTH));
+              setBioError(null);
+            }}
+            className="w-full rounded-2xl border border-gray-700 bg-[#121316] px-4 py-3.5 text-sm text-white outline-none placeholder:text-gray-600 focus:border-[#00FF87]"
+          />
+        </label>
+        <p className="mt-2 text-right text-[11px] text-gray-500">
+          {editBio.length}/{BIO_MAX_LENGTH}
+        </p>
+        {bioError ? <p className="mt-1 text-[12px] text-red-400">{bioError}</p> : null}
+        <button
+          type="button"
+          onClick={() => void saveBioEdit()}
+          disabled={savingBio}
+          className="mt-4 w-full rounded-xl bg-[#00FF87] py-3.5 text-sm font-bold text-black disabled:opacity-60"
+        >
+          {savingBio ? "저장 중..." : "저장하기"}
+        </button>
+      </BottomSheet>
 
       <BottomSheet
         open={showNickEdit}

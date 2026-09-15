@@ -19,6 +19,7 @@ export async function withdrawUserAccount(userId: string) {
       .from("verification_cheers")
       .delete()
       .or(`cheerer_user_id.eq.${id},target_user_id.eq.${id}`),
+    supabase.from("blocks").delete().or(`blocker_id.eq.${id},blocked_id.eq.${id}`),
     supabase.from("notices").delete().eq("user_id", id),
     supabase.from("user_group_bonuses").delete().eq("user_id", id),
     supabase.from("groups").update({ status: "deleted" }).eq("owner_id", id),

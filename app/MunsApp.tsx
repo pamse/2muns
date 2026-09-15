@@ -11,6 +11,11 @@ import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points
 import { withdrawUserAccount } from "@/lib/account";
 import { ensurePublicUserFromAuth } from "@/lib/authUser";
 import { parseCheerLink } from "@/lib/cheerNotifications";
+import {
+  blockUser,
+  fetchBlockedUserIds,
+  filterGroupsByBlockedMembers,
+} from "@/lib/moderation";
 import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import { useUserPoints } from "./useUserPoints";
 import {
@@ -153,6 +158,7 @@ export default function MunsApp() {
   const [showJoinLimit, setShowJoinLimit] = useState(false);
   const [autoOpenVerify, setAutoOpenVerify] = useState(false);
   const [roomFocusDay, setRoomFocusDay] = useState<number | null>(null);
+  const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
   const pendingIntentRef = useRef<AuthIntent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const { src: myProfileImage, applyFile: applyProfileImage, clearImage, uploading: profileImageUploading } = useMyProfileImage();
@@ -489,10 +495,36 @@ export default function MunsApp() {
     return ready && hasNickname;
   }
 
-  const visibleGroups = useMemo(
-    () => overlayMyProfile(groups, { userId, nickname, avatar: myProfileImage }),
-    [groups, userId, nickname, myProfileImage],
+  useEffect(() => {
+    if (!userId) {
+      setBlockedUserIds(new Set());
+      return;
+    }
+    void fetchBlockedUserIds(userId).then(setBlockedUserIds);
+  }, [userId]);
+
+  const handleBlockUser = useCallback(
+    async (blockedId: string) => {
+      if (!userId) return;
+      const normalized = normalizeGroupId(blockedId);
+      await blockUser(userId, blockedId);
+      setBlockedUserIds((prev) => {
+        const next = new Set(prev);
+        next.add(normalized);
+        setGroups((g) => filterGroupsByBlockedMembers(g, next));
+        setRoom((current) =>
+          current ? (filterGroupsByBlockedMembers([current], next)[0] ?? null) : null,
+        );
+        return next;
+      });
+    },
+    [userId],
   );
+
+  const visibleGroups = useMemo(() => {
+    const overlaid = overlayMyProfile(groups, { userId, nickname, avatar: myProfileImage });
+    return filterGroupsByBlockedMembers(overlaid, blockedUserIds);
+  }, [groups, userId, nickname, myProfileImage, blockedUserIds]);
   const myActiveGroups = useMemo(() => {
     if (!isLoggedIn() || !userId) return [];
     return listJoinedActiveGroups(visibleGroups, { userId, nickname }, joinedGroupIds);
@@ -1056,6 +1088,8 @@ export default function MunsApp() {
             onPointsEarned={handlePointsEarned}
             onCheerNotice={handleCheerNotice}
             onToast={setToast}
+            blockedUserIds={blockedUserIds}
+            onBlockUser={handleBlockUser}
           />
         )}
 

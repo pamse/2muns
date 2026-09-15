@@ -183,6 +183,7 @@ export type Database = {
           email: string | null;
           nickname: string | null;
           avatar_url: string | null;
+          bio: string | null;
           selected_categories: string[] | null;
           nickname_updated_at: string | null;
           points: number;
@@ -194,6 +195,7 @@ export type Database = {
           email?: string | null;
           nickname?: string | null;
           avatar_url?: string | null;
+          bio?: string | null;
           selected_categories?: string[] | null;
           nickname_updated_at?: string | null;
           points?: number;
@@ -205,10 +207,59 @@ export type Database = {
           email?: string | null;
           nickname?: string | null;
           avatar_url?: string | null;
+          bio?: string | null;
           selected_categories?: string[] | null;
           nickname_updated_at?: string | null;
           points?: number;
           extra_group_slots?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      blocks: {
+        Row: {
+          id: string;
+          blocker_id: string;
+          blocked_id: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          blocker_id: string;
+          blocked_id: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          blocker_id?: string;
+          blocked_id?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      reports: {
+        Row: {
+          id: string;
+          reporter_id: string | null;
+          reported_user_id: string;
+          reason: string;
+          status: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          reporter_id?: string | null;
+          reported_user_id: string;
+          reason: string;
+          status?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          reporter_id?: string | null;
+          reported_user_id?: string;
+          reason?: string;
+          status?: string;
           created_at?: string;
         };
         Relationships: [];
