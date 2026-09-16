@@ -963,7 +963,7 @@ export function RoomDetail({
   onGroupUpdate?: (group: Group) => void;
   onRaceNotices?: (notice: Notice) => void;
   onNoticesRefresh?: () => void;
-  onLeaveGroup?: (group: Group) => void;
+  onLeaveGroup?: (group: Group) => void | Promise<void>;
   onDeleteGroup?: (groupId: string) => void;
   onJoinGroup?: (group: Group) => void | Promise<void>;
   requireAuth?: () => boolean;
@@ -1593,7 +1593,6 @@ export function RoomDetail({
     const remaining = group.members.filter((member) => !isCurrentMember(member, userId));
     const updated: Group = { ...group, members: remaining };
     setConfirmAction(null);
-    onLeaveGroup?.(updated);
     try {
       if (userId) {
         await removeGroupMember(group.id, userId, remaining.length);
@@ -1603,8 +1602,12 @@ export function RoomDetail({
           .update({ current_count: remaining.length })
           .eq("id", group.id);
       }
+      await onLeaveGroup?.(updated);
     } catch (error) {
       console.error("groups leave update failed", error);
+      onToast?.("참여 취소에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
     }
   }
 

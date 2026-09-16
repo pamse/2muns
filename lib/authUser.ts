@@ -28,11 +28,60 @@ function pickMetaString(
   return null;
 }
 
-/** 카카오·Google OAuth user_metadata → 앱 프로필 필드 */
+/** Apple은 최초 1회만 name/full_name을 내려줄 수 있음 (객체 또는 문자열) */
+function pickAppleDisplayName(meta: Record<string, unknown>): string | null {
+  const fromString = pickMetaString(meta, [
+    "name",
+    "full_name",
+    "given_name",
+    "family_name",
+  ]);
+  if (fromString) return fromString;
+
+  const fullName = meta.full_name;
+  if (fullName && typeof fullName === "object" && !Array.isArray(fullName)) {
+    const record = fullName as Record<string, unknown>;
+    const first =
+      typeof record.firstName === "string"
+        ? record.firstName.trim()
+        : typeof record.given_name === "string"
+          ? record.given_name.trim()
+          : "";
+    const last =
+      typeof record.lastName === "string"
+        ? record.lastName.trim()
+        : typeof record.family_name === "string"
+          ? record.family_name.trim()
+          : "";
+    const combined = [first, last].filter(Boolean).join(" ").trim();
+    if (combined) return combined;
+  }
+
+  return null;
+}
+
+function resolveAuthEmail(user: User, meta: Record<string, unknown>): string | null {
+  if (user.email?.trim()) return user.email.trim();
+  const fromMeta = pickMetaString(meta, ["email"]);
+  return fromMeta;
+}
+
+/** 카카오·Google·Apple OAuth user_metadata → 앱 프로필 필드 */
 export function profileFromAuthUser(user: User) {
   const meta = (user.user_metadata ?? {}) as Record<string, unknown>;
+  const appMeta = user.app_metadata ?? {};
+  const provider =
+    pickMetaString(meta, ["provider"]) ??
+    (typeof appMeta.provider === "string" ? appMeta.provider : null);
+  const providers = appMeta.providers;
+  const isApple =
+    provider === "apple" ||
+    (Array.isArray(providers) && providers.includes("apple"));
+
+  const appleName = isApple ? pickAppleDisplayName(meta) : null;
 
   const rawNickname =
+    appleName ??
     pickMetaString(meta, [
       "name",
       "full_name",
@@ -40,7 +89,8 @@ export function profileFromAuthUser(user: User) {
       "user_name",
       "preferred_username",
       "display_name",
-    ]) ?? "";
+    ]) ??
+    "";
 
   const nickname = safeNickname(rawNickname);
 
@@ -54,7 +104,7 @@ export function profileFromAuthUser(user: User) {
 
   return {
     id: user.id,
-    email: user.email ?? null,
+    email: resolveAuthEmail(user, meta),
     nickname,
     avatar_url: avatarUrl,
   };

@@ -83,7 +83,7 @@ export async function GET(request: Request) {
 
   const { data: existingUser, error: profileError } = await supabase
     .from("users")
-    .select("id, nickname, selected_categories")
+    .select("id, nickname, selected_categories, email")
     .eq("id", user.id)
     .maybeSingle();
 
@@ -98,6 +98,7 @@ export async function GET(request: Request) {
   let userRow: {
     nickname: string | null;
     selected_categories: string[] | null;
+    email?: string | null;
   } | null = existingUser;
 
   if (!existingUser) {
@@ -113,11 +114,20 @@ export async function GET(request: Request) {
       .select("nickname, selected_categories")
       .single();
 
-    if (insertError) {
+    if (insertError?.code === "23505") {
+      const { data: raced } = await supabase
+        .from("users")
+        .select("nickname, selected_categories")
+        .eq("id", user.id)
+        .maybeSingle();
+      userRow = raced;
+    } else if (insertError) {
       console.error("auth callback users insert failed:", insertError);
     } else {
       userRow = newUser;
     }
+  } else if (!existingUser.email?.trim() && user.email?.trim()) {
+    await supabase.from("users").update({ email: user.email.trim() }).eq("id", user.id);
   }
 
   const registered = isUserRegistrationComplete(userRow ?? null);

@@ -4,7 +4,11 @@
 import { useEffect, useState } from "react";
 import { isNicknameTaken } from "@/lib/nicknameCheck";
 import { Check, Loader2, Lock, ShieldCheck, Sparkles, X } from "lucide-react";
-import { signInWithOAuthProvider, type OAuthProvider } from "@/lib/auth";
+import {
+  signInWithApple,
+  signInWithOAuthProvider,
+  type OAuthProvider,
+} from "@/lib/auth";
 import { HABIT_CATEGORIES, TIME_SLOTS } from "./data";
 import { validateNickname } from "./useNickname";
 import { supabase } from "@/lib/supabase";
@@ -24,6 +28,14 @@ function KakaoIcon() {
         fill="#191919"
         d="M12 3C6.48 3 2 6.58 2 11c0 2.83 1.86 5.31 4.62 6.72-.19.7-.69 2.54-.79 2.95-.12.5.18.49.38.36.16-.11 2.54-1.73 3.56-2.43A13.4 13.4 0 0 0 12 19c5.52 0 10-3.58 10-8s-4.48-8-10-8Z"
       />
+    </svg>
+  );
+}
+
+function AppleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden fill="currentColor">
+      <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
     </svg>
   );
 }
@@ -140,10 +152,18 @@ export function Onboarding({
     setLoadingProvider(provider);
     setSocialError(null);
     try {
-      await signInWithOAuthProvider(provider);
+      if (provider === "apple") {
+        await signInWithApple("/");
+      } else {
+        await signInWithOAuthProvider(provider);
+      }
     } catch (error) {
       console.error("oauth sign-in failed", error);
-      setSocialError("소셜 로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+      const label =
+        provider === "apple"
+          ? "Apple 로그인에 실패했습니다. 잠시 후 다시 시도해 주세요."
+          : "소셜 로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+      setSocialError(label);
       setLoadingProvider(null);
     }
   }
@@ -266,6 +286,19 @@ export function Onboarding({
                     <KakaoIcon />
                   )}
                   카카오로 3초 만에 시작하기
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void startSocial("apple")}
+                  disabled={busy}
+                  className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black text-sm font-semibold text-white ring-1 ring-white/10 transition-transform active:scale-[0.98] disabled:opacity-70"
+                >
+                  {loadingProvider === "apple" ? (
+                    <Loader2 size={18} className="animate-spin" />
+                  ) : (
+                    <AppleIcon />
+                  )}
+                  Apple로 계속하기
                 </button>
                 {SHOW_GOOGLE_LOGIN ? (
                   <button

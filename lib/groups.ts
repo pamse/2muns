@@ -53,6 +53,15 @@ export function persistJoinedIds(userId: string, ids: Iterable<string>) {
   }
 }
 
+export function removePersistedJoinedId(userId: string, groupId: string) {
+  const normalized = normalizeGroupId(groupId);
+  if (!userId || !normalized) return;
+  const next = readPersistedJoinedIds(userId).filter(
+    (id) => normalizeGroupId(id) !== normalized,
+  );
+  persistJoinedIds(userId, next);
+}
+
 export function clearPersistedJoinedIds(userId?: string | null) {
   if (typeof window === "undefined") return;
   try {
@@ -570,16 +579,22 @@ export async function hydrateUserGroups(
   let groups = await fetchAppGroups();
   const persistedIds = readPersistedJoinedIds(userId);
   let serverJoinedIds: string[] = [];
+  let membershipFromServer = false;
   try {
     serverJoinedIds = await fetchUserActiveGroupIds(userId, groups, me.nickname);
+    membershipFromServer = true;
   } catch (error) {
     console.error("active membership fetch failed", error);
   }
 
+  const joinedSeed = membershipFromServer
+    ? serverJoinedIds
+    : [...serverJoinedIds, ...persistedIds];
+
   let joinedIds = resolveUserJoinedGroupIds(
     groups,
     { userId, nickname: me.nickname },
-    [...serverJoinedIds, ...persistedIds],
+    joinedSeed,
   );
   groups = ensureJoinedMembership(groups, joinedIds, {
     userId,

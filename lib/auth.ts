@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 
-export type OAuthProvider = "kakao" | "google";
+export type OAuthProvider = "kakao" | "google" | "apple";
 
 export function getOAuthRedirectUrl(nextPath = "/") {
   if (typeof window === "undefined") {
@@ -10,7 +10,23 @@ export function getOAuthRedirectUrl(nextPath = "/") {
   return `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
 }
 
-export async function signInWithOAuthProvider(provider: OAuthProvider) {
+/** Sign in with Apple (App Store 4.8) */
+export async function signInWithApple(nextPath = "/") {
+  const redirectTo = getOAuthRedirectUrl(nextPath);
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "apple",
+    options: {
+      redirectTo,
+      scopes: "name email",
+    },
+  });
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function signInWithOAuthProvider(provider: Exclude<OAuthProvider, "apple">) {
   const redirectTo = getOAuthRedirectUrl("/");
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider,

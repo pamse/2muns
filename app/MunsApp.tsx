@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup } from "@/lib/groups";
+import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup, removePersistedJoinedId } from "@/lib/groups";
 import { canGuestJoinGroup } from "@/lib/groupRecruiting";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { withdrawUserAccount } from "@/lib/account";
@@ -560,6 +560,9 @@ export default function MunsApp() {
   function handleTabChange(next: TabKey) {
     if (next === "my" && !requireAuth({ type: "my" })) return;
     setTab(next);
+    if (next === "find" || next === "my") {
+      void refreshGroups();
+    }
   }
 
   function resetAppSessionState(prevUserId?: string | null) {
@@ -711,6 +714,32 @@ export default function MunsApp() {
     return result;
   }
 
+  async function handleLeaveGroup(updated: Group) {
+    const groupId = updated.id;
+    const normalized = normalizeGroupId(groupId);
+
+    setJoinedGroupIds((prev) => {
+      const next = prev.filter((id) => normalizeGroupId(id) !== normalized);
+      if (userId) persistJoinedIds(userId, next);
+      return next;
+    });
+    if (userId) {
+      removePersistedJoinedId(userId, groupId);
+    }
+
+    setGroups((prev) =>
+      prev.map((item) =>
+        normalizeGroupId(item.id) === normalized
+          ? { ...updated, members: updated.members }
+          : item,
+      ),
+    );
+
+    setRoom(null);
+    setToast("모임 참여를 취소했습니다");
+    await refreshGroups();
+  }
+
   async function openRoom(g: Group) {
     const member = isGroupMember(g, { userId, nickname });
     if (!canGuestJoinGroup(g, member) && !member) {
@@ -718,7 +747,8 @@ export default function MunsApp() {
       setAutoOpenVerify(false);
       return;
     }
-    setRoom(g);
+    const latest = groups.find((item) => item.id === g.id) ?? g;
+    setRoom(latest);
   }
 
   async function joinGroup(g: Group) {
@@ -1066,11 +1096,7 @@ export default function MunsApp() {
             onNoticesRefresh={() => {
               void refreshNotices(true);
             }}
-            onLeaveGroup={() => {
-              setRoom(null);
-              setToast("모임 참여를 취소했습니다");
-              void refreshGroups();
-            }}
+            onLeaveGroup={(updated) => handleLeaveGroup(updated)}
             onJoinGroup={(target) => joinGroup(target)}
             onDeleteGroup={(groupId) => {
               void (async () => {
