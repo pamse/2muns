@@ -160,6 +160,7 @@ function pickCanvasRecorderMimeType(): string {
 function loadVideoElement(url: string, day: number): Promise<HTMLVideoElement> {
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
+    // src/load 전에 설정 — Canvas drawImage 시 tainted canvas 방지
     video.crossOrigin = "anonymous";
     video.muted = true;
     video.playsInline = true;

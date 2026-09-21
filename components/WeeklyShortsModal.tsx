@@ -113,6 +113,7 @@ function ShortsPreview({
           <video
             ref={videoRef}
             key={clip.videoUrl}
+            crossOrigin="anonymous"
             autoPlay
             muted
             playsInline
