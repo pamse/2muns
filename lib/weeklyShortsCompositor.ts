@@ -13,6 +13,10 @@ const RECORD_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / RECORD_FPS;
 const MIN_HIGHLIGHT_BYTES = 500_000;
 const POST_RECORD_BUFFER_MS = 500;
+const RECORDER_VIDEO_BPS = 3_000_000;
+const RECORDER_TIMESLICE_MS = 500;
+
+let safariCanvasPulse = false;
 
 export type WeeklyShortsRenderClip = {
   day: number;
@@ -180,6 +184,77 @@ function requestCanvasFrame(canvasVideoStream: MediaStream) {
   track?.requestFrame?.();
 }
 
+/** iOS Safari: 픽셀 변경을 인코더에 강제 알림 */
+function forceCanvasPixelPulse(ctx: CanvasRenderingContext2D) {
+  safariCanvasPulse = !safariCanvasPulse;
+  ctx.fillStyle = safariCanvasPulse
+    ? "rgba(0,0,0,0.011)"
+    : "rgba(0,0,0,0.021)";
+  ctx.fillRect(0, 0, 1, 1);
+}
+
+type FrameDrawOpts = {
+  day: number;
+  title: string;
+  weekSlots: WeeklyShortsWeekSlot[];
+  activeSlotIndex: number;
+};
+
+function commitCompositorFrame(
+  ctx: CanvasRenderingContext2D,
+  canvasVideoStream: MediaStream,
+  video: HTMLVideoElement | null,
+  opts: FrameDrawOpts,
+) {
+  drawWeeklyShortsFrame(ctx, video, opts);
+  forceCanvasPixelPulse(ctx);
+  requestCanvasFrame(canvasVideoStream);
+}
+
+type CompositorStage = {
+  attachVideo: (video: HTMLVideoElement) => void;
+  detachVideo: () => void;
+  destroy: () => void;
+};
+
+/** 캔버스·소스 비디오를 DOM에 부착해 Safari 디코드/캡처 우선순위 유지 */
+function createCompositorStage(canvas: HTMLCanvasElement): CompositorStage {
+  const root = document.createElement("div");
+  root.setAttribute("data-weekly-shorts-compositor", "true");
+  root.setAttribute("aria-hidden", "true");
+  root.style.cssText =
+    "position:fixed;left:0;top:0;width:120px;height:213px;opacity:0.01;pointer-events:none;z-index:-1;overflow:hidden";
+  canvas.style.display = "block";
+  canvas.style.width = `${SHORTS_CANVAS_WIDTH}px`;
+  canvas.style.height = `${SHORTS_CANVAS_HEIGHT}px`;
+  root.appendChild(canvas);
+  document.body.appendChild(root);
+
+  let activeVideo: HTMLVideoElement | null = null;
+
+  return {
+    attachVideo(video: HTMLVideoElement) {
+      this.detachVideo();
+      video.volume = 0;
+      video.muted = true;
+      video.style.cssText =
+        "position:absolute;left:0;top:0;width:120px;height:213px;object-fit:cover;opacity:0.01";
+      root.appendChild(video);
+      activeVideo = video;
+    },
+    detachVideo() {
+      if (activeVideo) {
+        activeVideo.remove();
+        activeVideo = null;
+      }
+    },
+    destroy() {
+      this.detachVideo();
+      root.remove();
+    },
+  };
+}
+
 /** iOS Safari: canvas-only MediaRecorder 조기 종료 방지 */
 function createCanvasPlusSilentAudioStream(canvas: HTMLCanvasElement): {
   combinedStream: MediaStream;
@@ -226,18 +301,6 @@ function createCanvasPlusSilentAudioStream(canvas: HTMLCanvasElement): {
     canvasVideoStream,
     resumeAudio: () => audioCtx.resume(),
     cleanup,
-  };
-}
-
-function mountOffscreenVideo(video: HTMLVideoElement): () => void {
-  const container = document.createElement("div");
-  container.setAttribute("aria-hidden", "true");
-  container.style.cssText =
-    "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;overflow:hidden;pointer-events:none;z-index:-1";
-  container.appendChild(video);
-  document.body.appendChild(container);
-  return () => {
-    container.remove();
   };
 }
 
@@ -364,7 +427,7 @@ async function playAndDrawClip(
     // 재생 차단 시 seek + wall-clock 루프로 대체
   }
 
-  const drawOpts = {
+  const drawOpts: FrameDrawOpts = {
     day: segment.day,
     title: segment.title,
     weekSlots,
@@ -389,8 +452,7 @@ async function playAndDrawClip(
       }
     }
 
-    drawWeeklyShortsFrame(ctx, video, drawOpts);
-    requestCanvasFrame(canvasVideoStream);
+    commitCompositorFrame(ctx, canvasVideoStream, video, drawOpts);
     await delay(FRAME_INTERVAL_MS);
   }
 }
@@ -398,13 +460,14 @@ async function playAndDrawClip(
 async function playSegmentOnCanvas(
   ctx: CanvasRenderingContext2D,
   canvasVideoStream: MediaStream,
+  stage: CompositorStage,
   segment: WeeklyShortsRenderClip,
   weekSlots: WeeklyShortsWeekSlot[],
   activeSlotIndex: number,
   doubleSpeed: boolean,
 ): Promise<void> {
   const video = await loadVideoElement(segment.videoUrl, segment.day);
-  const unmount = mountOffscreenVideo(video);
+  stage.attachVideo(video);
 
   try {
     await playAndDrawClip(
@@ -420,7 +483,7 @@ async function playSegmentOnCanvas(
     video.pause();
     video.removeAttribute("src");
     video.load();
-    unmount();
+    stage.detachVideo();
   }
 }
 
@@ -446,6 +509,8 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     throw new Error("Canvas를 초기화하지 못했습니다.");
   }
 
+  const stage = createCompositorStage(canvas);
+
   const mimeType = pickCanvasRecorderMimeType();
   if (!mimeType) {
     throw new Error("영상 녹화 코덱을 찾지 못했습니다.");
@@ -460,18 +525,20 @@ export async function renderWeeklyShortsHighlightVideo(input: {
 
   await resumeAudio();
 
+  const recorderOptions: MediaRecorderOptions = {
+    mimeType,
+    videoBitsPerSecond: RECORDER_VIDEO_BPS,
+    audioBitsPerSecond: 128_000,
+  };
+
   const chunks: Blob[] = [];
   let recorder: MediaRecorder;
   try {
-    recorder = new MediaRecorder(combinedStream, {
-      mimeType,
-      videoBitsPerSecond: 2_500_000,
-      audioBitsPerSecond: 128_000,
-    });
+    recorder = new MediaRecorder(combinedStream, recorderOptions);
   } catch {
     recorder = new MediaRecorder(combinedStream, {
       mimeType,
-      videoBitsPerSecond: 2_500_000,
+      videoBitsPerSecond: RECORDER_VIDEO_BPS,
     });
   }
 
@@ -487,18 +554,17 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     if (event.data.size > 0) chunks.push(event.data);
   };
 
-  recorder.start(200);
+  recorder.start(RECORDER_TIMESLICE_MS);
   onProgress?.("숏츠 영상 제작 중...");
 
-  const warmupOpts = {
+  const warmupOpts: FrameDrawOpts = {
     day: segments[0]?.day ?? 1,
     title: segments[0]?.title ?? "",
     weekSlots,
     activeSlotIndex: 0,
   };
   for (let i = 0; i < 10; i += 1) {
-    drawWeeklyShortsFrame(ctx, null, warmupOpts);
-    requestCanvasFrame(canvasVideoStream);
+    commitCompositorFrame(ctx, canvasVideoStream, null, warmupOpts);
     await delay(FRAME_INTERVAL_MS);
   }
 
@@ -512,6 +578,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       await playSegmentOnCanvas(
         ctx,
         canvasVideoStream,
+        stage,
         segment,
         weekSlots,
         activeSlotIndex,
@@ -519,19 +586,25 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       );
     }
 
-    drawWeeklyShortsFrame(ctx, null, {
+    commitCompositorFrame(ctx, canvasVideoStream, null, {
       day: segments[segments.length - 1]?.day ?? 1,
       title: segments[segments.length - 1]?.title ?? "",
       weekSlots,
       activeSlotIndex: weekSlots.length - 1,
     });
-    requestCanvasFrame(canvasVideoStream);
     await delay(POST_RECORD_BUFFER_MS);
   } finally {
-    if (recorder.state !== "inactive") {
+    if (recorder.state === "recording") {
+      try {
+        recorder.requestData();
+      } catch {
+        // Safari 구버전
+      }
+      await delay(150);
       recorder.stop();
     }
     cleanupStreams();
+    stage.destroy();
   }
 
   const raw = await recorded;
