@@ -17,8 +17,10 @@ const FRAME_INTERVAL_MS = 1000 / RECORD_FPS;
 /** 720p·15초 합성 성공 기준 (Fallback은 이보다 작을 때만) */
 const MIN_HIGHLIGHT_BYTES = 200_000;
 const POST_RECORD_BUFFER_MS = 500;
-const RECORDER_VIDEO_BPS = 3_000_000;
-const RECORDER_VIDEO_BPS_MOBILE = 2_500_000;
+/** 1080p desktop 합성 */
+const RECORDER_VIDEO_BPS = 5_000_000;
+/** 720p mobile — 18초 기준 약 8~11MB, 계단 현상 완화 */
+const RECORDER_VIDEO_BPS_MOBILE = 4_000_000;
 
 function isIosWebKit(): boolean {
   if (typeof navigator === "undefined") return false;
@@ -159,6 +161,11 @@ function roundRectPath(
   ctx.closePath();
 }
 
+function applyCanvasDrawQuality(ctx: CanvasRenderingContext2D) {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+}
+
 function drawCoverVideo(
   ctx: CanvasRenderingContext2D,
   video: HTMLVideoElement,
@@ -170,6 +177,7 @@ function drawCoverVideo(
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
+  applyCanvasDrawQuality(ctx);
   const scale = Math.max(dw / vw, dh / vh);
   const sw = vw * scale;
   const sh = vh * scale;
@@ -188,6 +196,7 @@ export function drawWeeklyShortsFrame(
     activeSlotIndex: number;
   },
 ) {
+  applyCanvasDrawQuality(ctx);
   const W = ctx.canvas.width;
   const H = ctx.canvas.height;
   const s = W / SHORTS_CANVAS_WIDTH;
@@ -814,6 +823,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   if (!ctx) {
     throw new Error("Canvas를 초기화하지 못했습니다.");
   }
+  applyCanvasDrawQuality(ctx);
 
   logDebug(
     `캔버스 초기화 완료: ${canvas.width}x${canvas.height} ` +
