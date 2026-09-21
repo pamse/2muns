@@ -207,7 +207,13 @@ type MemberRow = {
   user_id: string;
   nickname?: string | null;
   avatar_url?: string | null;
+  status?: string | null;
 };
+
+function isActiveMemberRow(row: { status?: string | null }) {
+  const raw = (row.status ?? "active").trim().toLowerCase();
+  return raw !== "kicked";
+}
 
 function pickProfileText(...values: Array<string | null | undefined>) {
   for (const value of values) {
@@ -229,14 +235,14 @@ function resolvedMemberAvatar(row: MemberRow, profile: AppUser | null) {
 async function fetchMemberships(groupIds: string[]): Promise<MemberRow[]> {
   const { data, error } = await supabase
     .from("group_members")
-    .select("group_id, user_id")
+    .select("group_id, user_id, nickname, avatar_url, status")
     .in("group_id", groupIds);
 
   if (error) {
     throw new Error(error.message || "모임 멤버를 불러오지 못했습니다.");
   }
 
-  return (data ?? []) as MemberRow[];
+  return ((data ?? []) as MemberRow[]).filter(isActiveMemberRow);
 }
 
 async function fetchProfilesByUserIds(userIds: string[]): Promise<Map<string, AppUser>> {
@@ -464,7 +470,7 @@ export async function fetchUserCompletedGroups(
   const groupIds = new Set<string>();
   const { data: memberRows, error: memberError } = await supabase
     .from("group_members")
-    .select("group_id")
+    .select("group_id, status")
     .in("user_id", membershipUserIds);
 
   if (memberError) {
@@ -472,6 +478,7 @@ export async function fetchUserCompletedGroups(
   }
 
   for (const row of memberRows ?? []) {
+    if (!isActiveMemberRow(row)) continue;
     const id = normalizeGroupId(row.group_id);
     if (id) groupIds.add(id);
   }
@@ -519,12 +526,13 @@ export async function fetchUserActiveGroupIds(
   if (membershipUserIds.length > 0) {
     const { data: memberRows, error: memberError } = await supabase
       .from("group_members")
-      .select("group_id")
+      .select("group_id, status")
       .in("user_id", membershipUserIds);
     if (memberError) {
       throw new Error(memberError.message || "참여 중인 모임 수를 확인할 수 없습니다.");
     }
     for (const row of memberRows ?? []) {
+      if (!isActiveMemberRow(row)) continue;
       const id = normalizeGroupId(row.group_id);
       if (id) ids.add(id);
     }

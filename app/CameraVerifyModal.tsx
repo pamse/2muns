@@ -485,7 +485,7 @@ export function CameraVerifyModal({
                 className="flex items-center justify-center gap-2 rounded-xl bg-[#00FF87] py-3.5 text-sm font-bold text-black active:scale-[0.98] disabled:opacity-70"
               >
                 {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
-                {submitting ? "업로드 중" : "이대로 인증하기"}
+                {submitting ? "인증 영상 저장 중..." : "이대로 인증하기"}
               </button>
             </div>
           </div>

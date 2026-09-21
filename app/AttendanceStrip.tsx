@@ -1,6 +1,7 @@
 // 2müns — MY 탭 출석 캘린더: 공식 시작일(Day 1)부터 정렬
 "use client";
 
+import { Plus } from "lucide-react";
 import {
   addDaysToKey,
   challengeDayNumber,
@@ -116,15 +117,15 @@ export function AttendanceStrip({
 }) {
   const days = buildAttendanceStrip({ startedAt, totalDays, verifiedDays });
   const lives = Math.max(0, livesLeft);
-  const livesChip = (
+  const livesLabel = (
     <>
       남은 기회:{" "}
-      <span aria-label={`남은 기회 ${lives}회`}>
-        💚 {lives}
-        {onLivesClick ? <span className="text-[#00FF87]"> (+)</span> : null}
-      </span>
+      <span aria-label={`남은 기회 ${lives}회`}>💚 {lives}</span>
     </>
   );
+
+  const chipClass =
+    "inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 py-1 pl-2.5 pr-1 text-[11px] font-semibold text-slate-300";
 
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
@@ -134,14 +135,18 @@ export function AttendanceStrip({
           <button
             type="button"
             onClick={onLivesClick}
-            className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition-colors hover:border-[#00FF87]/40"
+            className={`${chipClass} transition-colors hover:border-[#00FF87]/40`}
           >
-            {livesChip}
+            {livesLabel}
+            <span
+              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#00FF87]/15 text-[#00FF87]"
+              aria-hidden
+            >
+              <Plus size={12} strokeWidth={2.8} />
+            </span>
           </button>
         ) : (
-          <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
-            {livesChip}
-          </span>
+          <span className={`${chipClass} pr-2.5`}>{livesLabel}</span>
         )}
       </div>
 

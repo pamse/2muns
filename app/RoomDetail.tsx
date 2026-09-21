@@ -36,8 +36,7 @@ import type { Notice, Verification } from "@/lib/database.types";
 import {
   fetchUserVerificationDays,
   fetchVerifications,
-  uploadVerificationVideo,
-  upsertVerification,
+  submitVerification,
   verificationVideoUrl,
 } from "@/lib/verifications";
 import {
@@ -462,20 +461,40 @@ function formatVerifiedAt(date = new Date()) {
   return `${clock} 인증`;
 }
 
+function findVerificationRowForSeat(
+  seat: Seat,
+  rows: Verification[],
+  viewerUserId?: string | null,
+) {
+  for (const row of rows) {
+    if (normalizeGroupId(row.user_id) === normalizeGroupId(seat.id)) {
+      return row;
+    }
+    if (
+      seat.me &&
+      viewerUserId &&
+      normalizeGroupId(row.user_id) === normalizeGroupId(viewerUserId)
+    ) {
+      return row;
+    }
+  }
+  return undefined;
+}
+
 function seatsForChallengeDay(
   base: Seat[],
   challengeDay: number,
   currentDay: number,
   rows: Verification[],
+  viewerUserId?: string | null,
 ): Seat[] {
   const isToday = challengeDay === currentDay;
-  const byUser = new Map(rows.map((row) => [row.user_id, row]));
 
   return base.map((seat) => {
     if (seat.empty) {
       return { ...seat, canVerify: false, archived: false, comment: "", verifiedAtLabel: "" };
     }
-    const row = byUser.get(seat.id);
+    const row = findVerificationRowForSeat(seat, rows, viewerUserId);
     const videoUrl = row ? verificationVideoUrl(row.video_path) : null;
     const verified = Boolean(row);
     return {
@@ -944,6 +963,7 @@ export function RoomDetail({
   onLeaveGroup,
   onDeleteGroup,
   onJoinGroup,
+  onRunGraceExpulsionChecks,
   requireAuth,
   autoOpenVerify = false,
   onAutoOpenVerifyHandled,
@@ -966,6 +986,7 @@ export function RoomDetail({
   onLeaveGroup?: (group: Group) => void | Promise<void>;
   onDeleteGroup?: (groupId: string) => void;
   onJoinGroup?: (group: Group) => void | Promise<void>;
+  onRunGraceExpulsionChecks?: () => void | Promise<void>;
   requireAuth?: () => boolean;
   autoOpenVerify?: boolean;
   onAutoOpenVerifyHandled?: () => void;
@@ -1023,6 +1044,11 @@ export function RoomDetail({
     setCameraOpen(true);
     onAutoOpenVerifyHandled?.();
   }, [autoOpenVerify, onAutoOpenVerifyHandled]);
+
+  useEffect(() => {
+    if (!userId) return;
+    void onRunGraceExpulsionChecks?.();
+  }, [group.id, userId, onRunGraceExpulsionChecks]);
 
   useEffect(() => {
     if (!initialChallengeDay || initialChallengeDay < 1) return;
@@ -1273,6 +1299,7 @@ export function RoomDetail({
         challengeDay,
         currentDay,
         dayRows,
+        userId,
       ),
     [displayGroup, nickname, myAvatar, userId, challengeDay, currentDay, dayRows],
   );
@@ -1433,33 +1460,54 @@ export function RoomDetail({
 
   async function handleConfirmCapture(payload: { blob: Blob; videoUrl: string; comment: string }) {
     if (!userId) {
+      onToast?.("로그인이 필요합니다.");
       throw new Error("로그인이 필요합니다.");
     }
-    const comment = payload.comment.trim().slice(0, 20);
+    if (challengeDay !== currentDay) {
+      onToast?.("오늘 일차에서만 인증할 수 있습니다.");
+      throw new Error("오늘 일차에서만 인증할 수 있습니다.");
+    }
+
     setUploading(true);
     try {
       const existingRows = await fetchVerifications(group.id, currentDay);
-      const isNewVerification = !existingRows.some((row) => row.user_id === userId);
+      const isNewVerification = !existingRows.some(
+        (row) => normalizeGroupId(row.user_id) === normalizeGroupId(userId),
+      );
 
-      const uploaded = await uploadVerificationVideo({
-        groupId: group.id,
-        userId,
-        day: currentDay,
-        blob: payload.blob,
-      });
-      const saved = await upsertVerification({
-        groupId: group.id,
-        userId,
-        day: currentDay,
-        comment,
-        videoPath: uploaded.path,
-      });
+      let saved;
+      try {
+        saved = await submitVerification({
+          groupId: group.id,
+          userId,
+          day: currentDay,
+          comment: payload.comment,
+          blob: payload.blob,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "인증 저장에 실패했습니다.";
+        if (message.includes("업로드")) {
+          onToast?.("영상 업로드에 실패했습니다. 다시 시도해주세요.");
+        } else {
+          onToast?.(message);
+        }
+        throw error instanceof Error
+          ? error
+          : new Error("인증 저장에 실패했습니다. 다시 시도해 주세요.");
+      }
+
       setDayRows((prev) => {
         const next = prev.filter(
-          (row) => !(row.user_id === userId && row.day === currentDay),
+          (row) =>
+            !(
+              normalizeGroupId(row.user_id) === normalizeGroupId(userId) &&
+              row.day === currentDay
+            ),
         );
         return [...next, saved];
       });
+      setCameraOpen(false);
 
       if (isNewVerification) {
         const verifiedDays = await fetchUserVerificationDays(group.id, userId);
@@ -1474,10 +1522,6 @@ export function RoomDetail({
           onPointsEarned?.(award);
         }
       }
-    } catch (error) {
-      throw error instanceof Error
-        ? error
-        : new Error("인증 저장에 실패했습니다. 다시 시도해 주세요.");
     } finally {
       setUploading(false);
     }

@@ -3,19 +3,18 @@ import type { Verification } from "@/lib/database.types";
 
 const BUCKET = "verifications";
 
-function extensionForBlob(blob: Blob) {
-  const type = blob.type.toLowerCase();
-  if (type.includes("mp4")) return "mp4";
-  if (type.includes("quicktime")) return "mov";
-  return "webm";
-}
-
 function safeSegment(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-export function verificationObjectPath(groupId: string, day: number, userId: string, blob: Blob) {
-  return `${safeSegment(groupId)}/${day}/${safeSegment(userId)}.${extensionForBlob(blob)}`;
+/** Storage 경로: `{group_id}/{day}/{user_id}.webm` */
+export function verificationObjectPath(
+  groupId: string,
+  day: number,
+  userId: string,
+  _blob?: Blob,
+) {
+  return `${safeSegment(groupId)}/${day}/${safeSegment(userId)}.webm`;
 }
 
 export function verificationVideoUrl(path: string) {
@@ -68,15 +67,22 @@ export async function uploadVerificationVideo(input: {
   day: number;
   blob: Blob;
 }) {
-  const path = verificationObjectPath(input.groupId, input.day, input.userId, input.blob);
+  const path = verificationObjectPath(
+    input.groupId,
+    input.day,
+    input.userId,
+    input.blob,
+  );
   const { error } = await supabase.storage.from(BUCKET).upload(path, input.blob, {
     upsert: true,
-    contentType: input.blob.type || "video/webm",
+    contentType: "video/webm",
     cacheControl: "3600",
   });
 
   if (error) {
-    throw new Error(error.message || "인증 영상 업로드에 실패했습니다.");
+    throw new Error(
+      error.message || "영상 업로드에 실패했습니다. 다시 시도해주세요.",
+    );
   }
 
   return { path, publicUrl: verificationVideoUrl(path) };
@@ -89,13 +95,13 @@ export async function upsertVerification(input: {
   comment: string;
   videoPath: string;
 }) {
+  const comment = input.comment.trim().slice(0, 20);
   const row = {
     group_id: input.groupId,
     user_id: input.userId,
     day: input.day,
-    comment: input.comment || null,
+    comment: comment || null,
     video_path: input.videoPath,
-    created_at: new Date().toISOString(),
   };
 
   const { data, error } = await supabase
@@ -108,5 +114,28 @@ export async function upsertVerification(input: {
     throw new Error(error.message || "인증 기록 저장에 실패했습니다.");
   }
 
-  return (data ?? row) as Verification;
+  return (data ?? { ...row, id: "", created_at: new Date().toISOString() }) as Verification;
+}
+
+/** Storage 업로드 + verifications upsert (현재 유저 인증 제출) */
+export async function submitVerification(input: {
+  groupId: string;
+  userId: string;
+  day: number;
+  comment: string;
+  blob: Blob;
+}): Promise<Verification> {
+  const uploaded = await uploadVerificationVideo({
+    groupId: input.groupId,
+    userId: input.userId,
+    day: input.day,
+    blob: input.blob,
+  });
+  return upsertVerification({
+    groupId: input.groupId,
+    userId: input.userId,
+    day: input.day,
+    comment: input.comment,
+    videoPath: uploaded.path,
+  });
 }

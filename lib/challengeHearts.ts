@@ -1,5 +1,6 @@
 import { ATTENDANCE_LIVES } from "@/app/AttendanceStrip";
-import { normalizeGroupId } from "@/app/data";
+import { isGroupOwner, normalizeGroupId, type Group } from "@/app/data";
+import { quitChallengeGroup, type QuitChallengeResult } from "@/lib/groups";
 import { supabase } from "@/lib/supabase";
 
 export const GRACE_PERIOD_MS = 86_400_000;
@@ -15,11 +16,20 @@ export type MemberHeartState = {
   status: MemberHeartStatus;
 };
 
-export const SOS_HEART_PACKAGES = [
-  { id: "sos-1", quantity: 1, priceLabel: "₩1,500", title: "SOS 하트 1개" },
-  { id: "sos-3", quantity: 3, priceLabel: "₩3,300", title: "기본 충전팩 3개" },
-  { id: "sos-5", quantity: 5, priceLabel: "₩4,900", title: "완주 보장팩 5개" },
-] as const;
+const GRACE_NOTICE_STORAGE_PREFIX = "muns:grace-warning-notice:";
+const EXPULSION_NOTICE_STORAGE_PREFIX = "muns:expulsion-notice:";
+
+function graceNoticeStorageKey(groupId: string, userId: string) {
+  return `${GRACE_NOTICE_STORAGE_PREFIX}${normalizeGroupId(groupId)}:${normalizeGroupId(userId)}`;
+}
+
+function expulsionNoticeStorageKey(
+  groupId: string,
+  userId: string,
+  warningAt: string,
+) {
+  return `${EXPULSION_NOTICE_STORAGE_PREFIX}${normalizeGroupId(groupId)}:${normalizeGroupId(userId)}:${warningAt}`;
+}
 
 function isHeartColumnMissing(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -29,8 +39,18 @@ function isHeartColumnMissing(error: unknown): boolean {
     record.code === "PGRST204" ||
     record.code === "42703" ||
     msg.includes("hearts_remaining") ||
-    msg.includes("member_status")
+    msg.includes("expulsion_warning_at") ||
+    (msg.includes("status") && msg.includes("column"))
   );
+}
+
+function readStatus(row: {
+  status?: string | null;
+  member_status?: string | null;
+}): MemberHeartStatus {
+  const raw = (row.status ?? row.member_status ?? "active").trim().toLowerCase();
+  if (raw === "warning" || raw === "kicked") return raw;
+  return "active";
 }
 
 export function computeHeartsRemaining(
@@ -62,14 +82,12 @@ export async function fetchMemberHeartState(
   groupId: string,
   userId: string,
 ): Promise<MemberHeartState | null> {
-  const gid = normalizeGroupId(groupId);
-  const uid = normalizeGroupId(userId);
-  if (!gid || !uid) return null;
+  if (!groupId || !userId) return null;
 
   const { data, error } = await supabase
     .from("group_members")
     .select(
-      "hearts_remaining, hearts_purchased_count, used_paid_heart, expulsion_warning_at, member_status",
+      "hearts_remaining, hearts_purchased_count, expulsion_warning_at, status, member_status",
     )
     .eq("group_id", groupId)
     .eq("user_id", userId)
@@ -87,25 +105,147 @@ export async function fetchMemberHeartState(
     hearts_purchased_count?: number;
     used_paid_heart?: boolean;
     expulsion_warning_at?: string | null;
+    status?: string | null;
     member_status?: string | null;
   };
-
-  const statusRaw = (row.member_status ?? "active").trim().toLowerCase();
-  const status: MemberHeartStatus =
-    statusRaw === "warning" || statusRaw === "kicked" ? statusRaw : "active";
 
   return {
     heartsRemaining: Math.max(0, row.hearts_remaining ?? ATTENDANCE_LIVES),
     heartsPurchasedCount: Math.max(0, row.hearts_purchased_count ?? 0),
     usedPaidHeart: Boolean(row.used_paid_heart),
     expulsionWarningAt: row.expulsion_warning_at ?? null,
-    status,
+    status: readStatus(row),
   };
 }
 
-export async function syncMemberHeartState(input: {
+async function insertGraceWarningNotice(input: {
+  userId: string;
+  groupId: string;
+  groupName: string;
+}) {
+  const storageKey = graceNoticeStorageKey(input.groupId, input.userId);
+  if (typeof window !== "undefined") {
+    try {
+      if (window.localStorage.getItem(storageKey) === "1") return;
+    } catch {
+      // ignore
+    }
+  }
+
+  const title = `[${input.groupName}] 출석 기회 소진 (24시간 유예)`;
+  const content =
+    "출석 기회가 모두 소진되었습니다! 24시간 이내에 SOS 하트를 충전하지 않으면 모임에서 강제 퇴장 처리됩니다.";
+
+  const { error } = await supabase.from("notices").insert({
+    user_id: input.userId,
+    title,
+    content,
+    tag: "warning",
+    is_active: true,
+  });
+
+  if (error) {
+    console.error("grace warning notice insert failed", error);
+    return;
+  }
+
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(storageKey, "1");
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function clearGraceNoticeMarker(groupId: string, userId: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(graceNoticeStorageKey(groupId, userId));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * 하트 0 + active → warning 전환, expulsion_warning_at 기록, notices insert
+ * (이미 warning/kicked이면 알림·시각 재기록하지 않음)
+ */
+export async function transitionToGraceIfNeeded(input: {
   groupId: string;
   userId: string;
+  groupName: string;
+  heartsRemaining: number;
+  current: MemberHeartState;
+}): Promise<MemberHeartState> {
+  if (input.current.status === "kicked") {
+    return input.current;
+  }
+
+  if (input.heartsRemaining > 0) {
+    if (input.current.status === "warning") {
+      clearGraceNoticeMarker(input.groupId, input.userId);
+    }
+    const patch = {
+      hearts_remaining: input.heartsRemaining,
+      status: "active" as const,
+      expulsion_warning_at: null,
+    };
+    await supabase
+      .from("group_members")
+      .update(patch)
+      .eq("group_id", input.groupId)
+      .eq("user_id", input.userId);
+    return {
+      ...input.current,
+      heartsRemaining: input.heartsRemaining,
+      status: "active",
+      expulsionWarningAt: null,
+    };
+  }
+
+  if (input.current.status === "warning" && input.current.expulsionWarningAt) {
+    const patch = { hearts_remaining: 0 };
+    await supabase
+      .from("group_members")
+      .update(patch)
+      .eq("group_id", input.groupId)
+      .eq("user_id", input.userId);
+    return { ...input.current, heartsRemaining: 0 };
+  }
+
+  const now = new Date().toISOString();
+  const patch = {
+    hearts_remaining: 0,
+    status: "warning" as const,
+    expulsion_warning_at: now,
+  };
+
+  const { error } = await supabase
+    .from("group_members")
+    .update(patch)
+    .eq("group_id", input.groupId)
+    .eq("user_id", input.userId);
+
+  if (error && !isHeartColumnMissing(error)) {
+    console.error("transitionToGraceIfNeeded update failed", error);
+  }
+
+  await insertGraceWarningNotice(input);
+
+  return {
+    ...input.current,
+    heartsRemaining: 0,
+    status: "warning",
+    expulsionWarningAt: now,
+  };
+}
+
+/** MY 탭 진입·출석 확인 시: hearts_remaining 반영 + 0이면 유예 전환 */
+export async function applyHeartAttendanceCheck(input: {
+  groupId: string;
+  userId: string;
+  groupName: string;
   missCount: number;
   pointHeartBonus: number;
 }): Promise<MemberHeartState | null> {
@@ -116,17 +256,16 @@ export async function syncMemberHeartState(input: {
       input.pointHeartBonus,
       0,
     );
-    return {
-      heartsRemaining,
-      heartsPurchasedCount: 0,
-      usedPaidHeart: false,
-      expulsionWarningAt: null,
-      status: heartsRemaining <= 0 ? "warning" : "active",
-    };
-  }
-
-  if (current.status === "kicked") {
-    return current;
+    if (heartsRemaining > 0) {
+      return {
+        heartsRemaining,
+        heartsPurchasedCount: 0,
+        usedPaidHeart: false,
+        expulsionWarningAt: null,
+        status: "active",
+      };
+    }
+    return null;
   }
 
   const heartsRemaining = computeHeartsRemaining(
@@ -135,45 +274,29 @@ export async function syncMemberHeartState(input: {
     current.heartsPurchasedCount,
   );
 
-  let status: MemberHeartStatus = current.status;
-  let expulsionWarningAt = current.expulsionWarningAt;
-
-  if (heartsRemaining > 0) {
-    status = "active";
-    expulsionWarningAt = null;
-  } else if (status === "active") {
-    status = "warning";
-    expulsionWarningAt = new Date().toISOString();
-  }
-
-  const patch = {
-    hearts_remaining: heartsRemaining,
-    member_status: status,
-    expulsion_warning_at: expulsionWarningAt,
-  };
-
-  const { error } = await supabase
-    .from("group_members")
-    .update(patch)
-    .eq("group_id", input.groupId)
-    .eq("user_id", input.userId);
-
-  if (error && !isHeartColumnMissing(error)) {
-    console.error("syncMemberHeartState update failed", error);
-  }
-
-  return {
-    ...current,
+  return transitionToGraceIfNeeded({
+    groupId: input.groupId,
+    userId: input.userId,
+    groupName: input.groupName,
     heartsRemaining,
-    status,
-    expulsionWarningAt,
-  };
+    current,
+  });
 }
+
+// --- 2·3단계용 (1단계에서는 MyTab에서 호출하지 않음) ---
+
+export const SOS_HEART_PACKAGES = [
+  { id: "sos-1", quantity: 1, priceLabel: "₩1,500", title: "SOS 하트 1개" },
+  { id: "sos-3", quantity: 3, priceLabel: "₩3,300", title: "기본 충전팩 3개" },
+  { id: "sos-5", quantity: 5, priceLabel: "₩4,900", title: "완주 보장팩 5개" },
+] as const;
 
 export async function mockPurchaseSosHearts(input: {
   groupId: string;
   userId: string;
   quantity: number;
+  /** UI에서 confirm 후 호출 시 중복 confirm 방지 */
+  skipConfirm?: boolean;
 }): Promise<{ ok: boolean; message: string; state?: MemberHeartState }> {
   const quantity = Math.max(1, Math.floor(input.quantity));
   const current = await fetchMemberHeartState(input.groupId, input.userId);
@@ -192,21 +315,23 @@ export async function mockPurchaseSosHearts(input: {
     };
   }
 
-  const approved =
-    typeof window !== "undefined" &&
-    window.confirm(
-      `[테스트 결제] SOS 하트 ${quantity}개를 충전하시겠습니까?\n(실제 결제는 연동되지 않았습니다.)`,
-    );
-  if (!approved) {
-    return { ok: false, message: "결제가 취소되었습니다." };
+  if (!input.skipConfirm) {
+    const approved =
+      typeof window !== "undefined" &&
+      window.confirm(
+        `[테스트 결제] SOS 하트 ${quantity}개를 충전하시겠습니까?\n(실제 결제는 연동되지 않았습니다.)`,
+      );
+    if (!approved) {
+      return { ok: false, message: "결제가 취소되었습니다." };
+    }
   }
 
   const heartsRemaining = current.heartsRemaining + quantity;
+  clearGraceNoticeMarker(input.groupId, input.userId);
   const patch = {
     hearts_remaining: heartsRemaining,
     hearts_purchased_count: nextPurchased,
-    used_paid_heart: true,
-    member_status: "active" as const,
+    status: "active" as const,
     expulsion_warning_at: null,
   };
 
@@ -239,52 +364,171 @@ export async function mockPurchaseSosHearts(input: {
   };
 }
 
+async function insertExpulsionNotice(input: {
+  userId: string;
+  groupId: string;
+  groupName: string;
+  warningAt: string;
+}) {
+  const storageKey = expulsionNoticeStorageKey(
+    input.groupId,
+    input.userId,
+    input.warningAt,
+  );
+  if (typeof window !== "undefined") {
+    try {
+      if (window.localStorage.getItem(storageKey) === "1") return;
+    } catch {
+      // ignore
+    }
+  }
+
+  const title = `[${input.groupName}] 강제 퇴장 완료`;
+  const content =
+    "24시간의 유예 기간 동안 SOS 하트 충전이 확인되지 않아 모임에서 퇴장 처리되었습니다.";
+
+  const { error } = await supabase.from("notices").insert({
+    user_id: input.userId,
+    title,
+    content,
+    tag: "penalty",
+    is_active: true,
+  });
+
+  if (error) {
+    console.error("expulsion notice insert failed", error);
+    return;
+  }
+
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(storageKey, "1");
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export type GraceExpulsionResult = {
+  expelled: boolean;
+  groupId?: string;
+  quitResult?: QuitChallengeResult;
+};
+
+/** 24h 유예 만료 시 강퇴 + notices (동일 warningAt 건당 알림 1회) */
 export async function processGraceExpulsion(input: {
   groupId: string;
   userId: string;
   groupName: string;
-}): Promise<boolean> {
+  group?: Pick<Group, "id" | "ownerId" | "createdBy" | "members">;
+}): Promise<GraceExpulsionResult> {
   const state = await fetchMemberHeartState(input.groupId, input.userId);
-  if (!state || state.status !== "warning" || !state.expulsionWarningAt) {
-    return false;
+  if (!state) {
+    return { expelled: false };
+  }
+  if (state.status === "kicked") {
+    return { expelled: false };
+  }
+  if (state.status !== "warning" || !state.expulsionWarningAt) {
+    return { expelled: false };
   }
   if (graceRemainingMs(state.expulsionWarningAt) > 0) {
-    return false;
+    return { expelled: false };
   }
 
-  const { error: kickError } = await supabase
+  const warningAt = state.expulsionWarningAt;
+
+  const { error: kickMarkError } = await supabase
     .from("group_members")
-    .update({ member_status: "kicked" })
+    .update({ status: "kicked" })
     .eq("group_id", input.groupId)
     .eq("user_id", input.userId);
-
-  if (kickError && !isHeartColumnMissing(kickError)) {
-    console.error("processGraceExpulsion kick update failed", kickError);
+  if (kickMarkError && !isHeartColumnMissing(kickMarkError)) {
+    console.error("processGraceExpulsion kick mark failed", kickMarkError);
   }
 
-  await supabase.from("group_members").delete().eq("group_id", input.groupId).eq("user_id", input.userId);
+  const { data: memberRows, error: membersError } = await supabase
+    .from("group_members")
+    .select("user_id")
+    .eq("group_id", input.groupId);
 
-  const title = `[${input.groupName}] 강제 퇴장 완료`;
-  const content =
-    "24시간의 유예 기간 동안 하트 충전이 확인되지 않아 모임에서 퇴장 처리되었습니다.";
+  if (membersError) {
+    console.error("processGraceExpulsion members fetch failed", membersError);
+    return { expelled: false };
+  }
 
+  const remaining = (memberRows ?? []).filter((row) => row.user_id !== input.userId);
+  let isOwner = false;
+  if (input.group) {
+    isOwner = isGroupOwner(input.group as Group, input.userId);
+  } else {
+    const { data: groupRow } = await supabase
+      .from("groups")
+      .select("owner_id")
+      .eq("id", input.groupId)
+      .maybeSingle();
+    isOwner =
+      normalizeGroupId(groupRow?.owner_id) === normalizeGroupId(input.userId);
+  }
+
+  let quitResult: QuitChallengeResult;
   try {
-    await supabase.from("notices").insert({
-      user_id: input.userId,
-      title,
-      content,
-      tag: "penalty",
-      is_active: true,
+    quitResult = await quitChallengeGroup({
+      groupId: input.groupId,
+      userId: input.userId,
+      isOwner,
+      remainingMemberCount: remaining.length,
     });
   } catch (error) {
-    console.error("expulsion notice insert failed", error);
+    console.error("processGraceExpulsion quit failed", error);
+    return { expelled: false };
   }
 
-  return true;
+  await insertExpulsionNotice({
+    userId: input.userId,
+    groupId: input.groupId,
+    groupName: input.groupName,
+    warningAt,
+  });
+
+  clearGraceNoticeMarker(input.groupId, input.userId);
+  return { expelled: true, groupId: input.groupId, quitResult };
 }
 
-/** 완주 뱃지: 유료 하트 미사용 시 골드 */
+export async function sweepGraceExpulsions(input: {
+  userId: string;
+  groups: Array<Pick<Group, "id" | "name" | "ownerId" | "createdBy" | "members">>;
+}): Promise<GraceExpulsionResult[]> {
+  const results: GraceExpulsionResult[] = [];
+  for (const group of input.groups) {
+    const result = await processGraceExpulsion({
+      groupId: group.id,
+      userId: input.userId,
+      groupName: group.name,
+      group,
+    });
+    if (result.expelled) {
+      results.push({ ...result, groupId: group.id });
+    }
+  }
+  return results;
+}
+
 export function isGoldCompletionBadge(state: MemberHeartState | null): boolean {
   if (!state) return true;
   return !state.usedPaidHeart;
+}
+
+/** @deprecated use applyHeartAttendanceCheck */
+export async function syncMemberHeartState(input: {
+  groupId: string;
+  userId: string;
+  missCount: number;
+  pointHeartBonus: number;
+  groupName?: string;
+}): Promise<MemberHeartState | null> {
+  return applyHeartAttendanceCheck({
+    ...input,
+    groupName: input.groupName ?? "모임",
+  });
 }

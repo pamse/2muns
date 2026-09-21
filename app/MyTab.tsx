@@ -61,10 +61,7 @@ import {
   updateUserBio,
 } from "@/lib/moderation";
 import {
-  formatGraceCountdown,
-  graceRemainingMs,
-  processGraceExpulsion,
-  syncMemberHeartState,
+  applyHeartAttendanceCheck,
   type MemberHeartState,
 } from "@/lib/challengeHearts";
 import { SosHeartRechargeModal } from "./SosHeartRechargeModal";
@@ -592,16 +589,14 @@ function NicknameLimitModal({
 function WarningBadge({
   miss,
   heartStatus,
-  graceLabel,
 }: {
   miss: number;
   heartStatus?: "active" | "warning" | "kicked";
-  graceLabel?: string | null;
 }) {
   if (heartStatus === "warning") {
     return (
       <Pill tone="danger">
-        <AlertTriangle size={12} /> 퇴장 위기 {graceLabel ? `(${graceLabel})` : "(24h)"}
+        <AlertTriangle size={12} /> ⚠️ 퇴장 위기 (24시간 남음)
       </Pill>
     );
   }
@@ -665,7 +660,7 @@ export function MyTab({
   onPointsToast,
   onPointsSnapshot,
   onRefreshPoints,
-  onHeartKicked,
+  onRunGraceExpulsionChecks,
 }: {
   onGoFind: () => void;
   onOpenRoom: (group: Group) => void;
@@ -689,7 +684,7 @@ export function MyTab({
   onPointsToast?: (message: string) => void;
   onPointsSnapshot?: (snapshot: UserPointsSnapshot) => void;
   onRefreshPoints?: () => Promise<UserPointsSnapshot | void>;
-  onHeartKicked?: (groupId: string) => void | Promise<void>;
+  onRunGraceExpulsionChecks?: () => void | Promise<void>;
 }) {
   const joinedGroups = useMemo(
     () =>
@@ -737,7 +732,7 @@ export function MyTab({
   const [refreshing, setRefreshing] = useState(false);
   const [heartState, setHeartState] = useState<MemberHeartState | null>(null);
   const [showSosModal, setShowSosModal] = useState(false);
-  const [graceNowMs, setGraceNowMs] = useState(() => Date.now());
+  const autoSosForWarningKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (myGroups.length === 0) {
@@ -855,6 +850,7 @@ export function MyTab({
   }, [myUserId, userPoints]);
 
   const handleRefresh = useCallback(async () => {
+    await onRunGraceExpulsionChecks?.();
     setRefreshing(true);
     try {
       const snapshot = await onRefreshPoints?.();
@@ -889,6 +885,7 @@ export function MyTab({
     myUserId,
     nickname,
     onRefreshPoints,
+    onRunGraceExpulsionChecks,
     selected?.id,
     started,
     userPoints,
@@ -922,29 +919,17 @@ export function MyTab({
     }
     let cancelled = false;
     void (async () => {
-      const kicked = await processGraceExpulsion({
+      await onRunGraceExpulsionChecks?.();
+      if (cancelled) return;
+      const synced = await applyHeartAttendanceCheck({
         groupId: selected.id,
         userId: myUserId,
         groupName: selected.name,
-      });
-      if (cancelled) return;
-      if (kicked) {
-        setHeartState(null);
-        setShowSosModal(false);
-        await onHeartKicked?.(selected.id);
-        return;
-      }
-      const synced = await syncMemberHeartState({
-        groupId: selected.id,
-        userId: myUserId,
         missCount: progress.missCount,
         pointHeartBonus: selectedHeartBonus,
       });
-      if (cancelled || !synced) return;
+      if (cancelled) return;
       setHeartState(synced);
-      if (synced.status === "warning") {
-        setShowSosModal(true);
-      }
     })();
     return () => {
       cancelled = true;
@@ -956,19 +941,31 @@ export function MyTab({
     started,
     progress?.missCount,
     selectedHeartBonus,
-    onHeartKicked,
+    onRunGraceExpulsionChecks,
   ]);
 
   useEffect(() => {
-    if (heartState?.status !== "warning") return;
-    const id = window.setInterval(() => setGraceNowMs(Date.now()), 30_000);
-    return () => window.clearInterval(id);
-  }, [heartState?.status, heartState?.expulsionWarningAt]);
+    autoSosForWarningKeyRef.current = null;
+  }, [selected?.id]);
 
-  const graceLabel =
-    heartState?.status === "warning" && heartState.expulsionWarningAt
-      ? formatGraceCountdown(graceRemainingMs(heartState.expulsionWarningAt, graceNowMs))
-      : null;
+  useEffect(() => {
+    if (!selected?.id) return;
+    if (!myGroups.some((group) => group.id === selected.id)) {
+      setShowSosModal(false);
+      setHeartState(null);
+    }
+  }, [myGroups, selected?.id]);
+
+  useEffect(() => {
+    if (!selected?.id || heartState?.status !== "warning" || !heartState.expulsionWarningAt) {
+      return;
+    }
+    const key = `${selected.id}:${heartState.expulsionWarningAt}`;
+    if (autoSosForWarningKeyRef.current === key) return;
+    autoSosForWarningKeyRef.current = key;
+    setShowSosModal(true);
+  }, [selected?.id, heartState?.status, heartState?.expulsionWarningAt]);
+
   const completedHabits = useMemo(() => {
     const merged = new Map<string, Group>();
     for (const group of listUserCompletedGroups(groups, {
@@ -1159,7 +1156,6 @@ export function MyTab({
               <WarningBadge
                 miss={progress?.missCount ?? 0}
                 heartStatus={heartState?.status}
-                graceLabel={graceLabel}
               />
             ) : null}
           </div>
@@ -1287,11 +1283,7 @@ export function MyTab({
               totalDays={progress.totalDays}
               verifiedDays={progress.verifiedDays}
               livesLeft={livesLeft}
-              onLivesClick={
-                livesLeft <= 0 || heartState?.status === "warning"
-                  ? () => setShowSosModal(true)
-                  : undefined
-              }
+              onLivesClick={() => setShowSosModal(true)}
             />
             <button
               type="button"
@@ -1543,7 +1535,7 @@ export function MyTab({
         onConfirm={() => void handleQuit()}
       />
 
-      {selected && myUserId && heartState?.status === "warning" ? (
+      {selected && myUserId && started ? (
         <SosHeartRechargeModal
           open={showSosModal}
           onClose={() => setShowSosModal(false)}

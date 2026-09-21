@@ -132,7 +132,8 @@ export type Database = {
           hearts_purchased_count: number;
           used_paid_heart: boolean;
           expulsion_warning_at: string | null;
-          member_status: string;
+          status: string;
+          member_status?: string | null;
         };
         Insert: {
           id?: string;
@@ -145,7 +146,8 @@ export type Database = {
           hearts_purchased_count?: number;
           used_paid_heart?: boolean;
           expulsion_warning_at?: string | null;
-          member_status?: string;
+          status?: string;
+          member_status?: string | null;
         };
         Update: {
           id?: string;
@@ -158,17 +160,23 @@ export type Database = {
           hearts_purchased_count?: number;
           used_paid_heart?: boolean;
           expulsion_warning_at?: string | null;
-          member_status?: string;
+          status?: string;
+          member_status?: string | null;
         };
         Relationships: [];
       };
       verifications: {
         Row: {
           id: string;
+          /** FK → groups.id (uuid) */
           group_id: string;
+          /** users.id / auth uid (text) */
           user_id: string;
+          /** 챌린지 일차 1~66 */
           day: number;
+          /** 최대 20자 (DB check) */
           comment: string | null;
+          /** Storage object path, e.g. {group_id}/{day}/{user_id}.webm */
           video_path: string;
           created_at: string;
         };
@@ -190,7 +198,15 @@ export type Database = {
           video_path?: string;
           created_at?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "verifications_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       users: {
         Row: {

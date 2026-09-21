@@ -5,7 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Plus, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
-import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup, removePersistedJoinedId } from "@/lib/groups";
+import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup, removePersistedJoinedId, type QuitChallengeResult } from "@/lib/groups";
+import { sweepGraceExpulsions } from "@/lib/challengeHearts";
 import { canGuestJoinGroup } from "@/lib/groupRecruiting";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { withdrawUserAccount } from "@/lib/account";
@@ -644,6 +645,108 @@ export default function MunsApp() {
     openCreateSheet(groupToCreatePrefill(g));
   }
 
+  function applyQuitChallengeLocally(
+    groupId: string,
+    result: QuitChallengeResult,
+    toastMessage?: string | null,
+  ) {
+    if (!userId) return;
+
+    setJoinedGroupIds((prev) => {
+      const next = prev.filter(
+        (id) => normalizeGroupId(id) !== normalizeGroupId(groupId),
+      );
+      persistJoinedIds(userId, next);
+      removePersistedJoinedId(userId, groupId);
+      return next;
+    });
+
+    setGroups((prev) => {
+      const target = prev.find((item) => item.id === groupId);
+      const remainingMembers =
+        target?.members.filter(
+          (member) => member.id !== userId && member.id !== "me",
+        ) ?? [];
+      const owner = target ? isGroupOwner(target, userId) : false;
+
+      if (result.type === "deleted") {
+        if (toastMessage === undefined) setToast("모임이 종료되었습니다");
+        return prev.filter((item) => item.id !== groupId);
+      }
+      if (result.type === "handoff") {
+        if (toastMessage === undefined) {
+          setToast(
+            result.soloRecruit
+              ? "1명만 남아 특별 추가 모집이 시작됐어요. 모집 중 탭에서 탑승을 기다려 주세요."
+              : owner
+                ? "방장 권한을 넘기고 퇴장했습니다."
+                : "챌린지에서 퇴장했습니다",
+          );
+        }
+        return prev.map((item) => {
+          if (item.id !== groupId) return item;
+          const next: Group = {
+            ...item,
+            members: remainingMembers,
+            ownerId: result.newOwnerId,
+            createdBy: result.newOwnerId,
+          };
+          if (result.soloRecruit) {
+            next.dbStatus = "recruiting";
+            next.filter = "joinable";
+            next.raceStatus = item.startedAt ? "started" : "recruiting";
+          }
+          return next;
+        });
+      }
+      if (toastMessage === undefined) {
+        setToast("챌린지에서 퇴장했습니다");
+      }
+      return prev.map((item) =>
+        item.id === groupId ? { ...item, members: remainingMembers } : item,
+      );
+    });
+
+    if (toastMessage) {
+      setToast(toastMessage);
+    }
+
+    setRoom((current) => (current?.id === groupId ? null : current));
+  }
+
+  const runGraceExpulsionChecks = useCallback(async () => {
+    if (!userId || !hasNickname) return;
+    const active = listJoinedActiveGroups(groups, { userId, nickname }, joinedGroupIds);
+    if (active.length === 0) return;
+
+    const expelled = await sweepGraceExpulsions({ userId, groups: active });
+    if (expelled.length === 0) return;
+
+    for (const item of expelled) {
+      if (!item.groupId || !item.quitResult) continue;
+      applyQuitChallengeLocally(
+        item.groupId,
+        item.quitResult,
+        "24시간 유예가 지나 모임에서 퇴장 처리되었습니다.",
+      );
+    }
+    void refreshNotices(true);
+    await refreshGroups();
+  }, [
+    groups,
+    hasNickname,
+    joinedGroupIds,
+    nickname,
+    refreshGroups,
+    refreshNotices,
+    userId,
+  ]);
+
+  useEffect(() => {
+    if (tab !== "my" || !userId || !hasNickname) return;
+    void runGraceExpulsionChecks();
+  }, [tab, userId, hasNickname, runGraceExpulsionChecks]);
+
   async function performQuitGroup(groupId: string) {
     if (!userId) {
       throw new Error("로그인이 필요합니다.");
@@ -666,50 +769,7 @@ export default function MunsApp() {
       remainingMemberCount: remainingMembers.length,
     });
 
-    const nextJoinedIds = joinedGroupIds.filter(
-      (id) => normalizeGroupId(id) !== normalizeGroupId(groupId),
-    );
-    setJoinedGroupIds(nextJoinedIds);
-    persistJoinedIds(userId, nextJoinedIds);
-
-    if (result.type === "deleted") {
-      setGroups((prev) => prev.filter((item) => item.id !== groupId));
-      setToast("모임이 종료되었습니다");
-    } else if (result.type === "handoff") {
-      setGroups((prev) =>
-        prev.map((item) => {
-          if (item.id !== groupId) return item;
-          const next: Group = {
-            ...item,
-            members: remainingMembers,
-            ownerId: result.newOwnerId,
-            createdBy: result.newOwnerId,
-          };
-          if (result.soloRecruit) {
-            next.dbStatus = "recruiting";
-            next.filter = "joinable";
-            next.raceStatus = item.startedAt ? "started" : "recruiting";
-          }
-          return next;
-        }),
-      );
-      setToast(
-        result.soloRecruit
-          ? "1명만 남아 특별 추가 모집이 시작됐어요. 모집 중 탭에서 탑승을 기다려 주세요."
-          : owner
-            ? "방장 권한을 넘기고 퇴장했습니다."
-            : "챌린지에서 퇴장했습니다",
-      );
-    } else {
-      setGroups((prev) =>
-        prev.map((item) =>
-          item.id === groupId ? { ...item, members: remainingMembers } : item,
-        ),
-      );
-      setToast("챌린지에서 퇴장했습니다");
-    }
-
-    setRoom((current) => (current?.id === groupId ? null : current));
+    applyQuitChallengeLocally(groupId, result);
     await refreshGroups();
     return result;
   }
@@ -1049,21 +1109,7 @@ export default function MunsApp() {
               onPointsToast={setToast}
               onPointsSnapshot={applyPointsSnapshot}
               onRefreshPoints={refreshPoints}
-              onHeartKicked={async (groupId) => {
-                const normalized = normalizeGroupId(groupId);
-                setJoinedGroupIds((prev) => {
-                  const next = prev.filter((id) => normalizeGroupId(id) !== normalized);
-                  if (userId) persistJoinedIds(userId, next);
-                  return next;
-                });
-                if (userId) removePersistedJoinedId(userId, groupId);
-                setRoom((current) =>
-                  current && normalizeGroupId(current.id) === normalized ? null : current,
-                );
-                setToast("유예 기간이 지나 모임에서 퇴장 처리되었습니다.");
-                await refreshGroups();
-                void refreshNotices(true);
-              }}
+              onRunGraceExpulsionChecks={runGraceExpulsionChecks}
             />
           )}
         </main>
@@ -1112,6 +1158,7 @@ export default function MunsApp() {
               void refreshNotices(true);
             }}
             onLeaveGroup={(updated) => handleLeaveGroup(updated)}
+            onRunGraceExpulsionChecks={runGraceExpulsionChecks}
             onJoinGroup={(target) => joinGroup(target)}
             onDeleteGroup={(groupId) => {
               void (async () => {

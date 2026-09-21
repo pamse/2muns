@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, X } from "lucide-react";
 import {
+  fetchMemberHeartState,
   formatGraceCountdown,
   graceRemainingMs,
   MAX_SOS_HEARTS_PER_CHALLENGE,
@@ -34,10 +35,32 @@ export function SosHeartRechargeModal({
   const [host, setHost] = useState<HTMLElement | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
+  const [resolvedState, setResolvedState] = useState<MemberHeartState | null>(
+    heartState,
+  );
 
   useEffect(() => {
     setHost(document.getElementById("muns-frame") ?? document.body);
   }, []);
+
+  useEffect(() => {
+    setResolvedState(heartState);
+  }, [heartState]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    if (heartState) {
+      setResolvedState(heartState);
+      return;
+    }
+    void fetchMemberHeartState(groupId, userId).then((fetched) => {
+      if (!cancelled) setResolvedState(fetched);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, groupId, userId, heartState]);
 
   useEffect(() => {
     if (!open) return;
@@ -45,20 +68,46 @@ export function SosHeartRechargeModal({
     return () => window.clearInterval(id);
   }, [open]);
 
-  if (!open || !host || !heartState) return null;
+  if (!open || !host) return null;
 
-  const purchased = heartState.heartsPurchasedCount;
+  if (!resolvedState) {
+    return createPortal(
+      <div className="absolute inset-0 z-[92] flex items-end justify-center sm:items-center">
+        <button type="button" aria-label="닫기" onClick={onClose} className="absolute inset-0 bg-black/70" />
+        <div className="relative z-10 flex w-full max-w-[420px] items-center justify-center rounded-t-3xl border border-slate-700 bg-[#1B1D22] p-10 sm:rounded-2xl">
+          <Loader2 size={28} className="animate-spin text-zinc-400" />
+        </div>
+      </div>,
+      host,
+    );
+  }
+
+  const purchased = resolvedState.heartsPurchasedCount;
   const remainingQuota = Math.max(0, MAX_SOS_HEARTS_PER_CHALLENGE - purchased);
-  const atCap = remainingQuota <= 0;
-  const graceMs = graceRemainingMs(heartState.expulsionWarningAt, nowMs);
+  const atCap = purchased >= MAX_SOS_HEARTS_PER_CHALLENGE || remainingQuota <= 0;
+  const inGrace = resolvedState.status === "warning";
+  const graceMs = graceRemainingMs(resolvedState.expulsionWarningAt, nowMs);
 
   async function buy(quantity: number) {
     if (busy || atCap || quantity > remainingQuota) return;
+    const pkg = SOS_HEART_PACKAGES.find((p) => p.quantity === quantity);
+    const label = pkg?.title ?? `SOS 하트 ${quantity}개`;
+    const approved = window.confirm(
+      `[테스트 결제] ${label}을(를) 충전하시겠습니까?\n(실제 결제는 연동되지 않았습니다.)`,
+    );
+    if (!approved) return;
+
     setBusy(true);
     try {
-      const result = await mockPurchaseSosHearts({ groupId, userId, quantity });
-      onToast?.(result.message);
+      const result = await mockPurchaseSosHearts({
+        groupId,
+        userId,
+        quantity,
+        skipConfirm: true,
+      });
+      if (result.message) onToast?.(result.message);
       if (result.ok && result.state) {
+        setResolvedState(result.state);
         onRecharged(result.state);
         onClose();
       }
@@ -73,64 +122,69 @@ export function SosHeartRechargeModal({
       <div
         role="dialog"
         aria-modal="true"
+        aria-labelledby="sos-heart-title"
         className="relative z-10 max-h-[90vh] w-full max-w-[420px] overflow-y-auto rounded-t-3xl border border-red-500/30 bg-[#1B1D22] p-5 sm:rounded-2xl"
       >
         <div className="flex items-start justify-between gap-2">
-          <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2.5 py-1 text-[11px] font-bold text-red-300">
-            <AlertTriangle size={12} /> 긴급 SOS
-          </span>
+          {inGrace ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2.5 py-1 text-[11px] font-bold text-red-300">
+              <AlertTriangle size={12} /> 24시간 유예 중
+            </span>
+          ) : (
+            <span className="text-[11px] font-semibold text-zinc-500">{groupName}</span>
+          )}
           <button type="button" onClick={onClose} aria-label="닫기" className="text-zinc-500">
             <X size={20} />
           </button>
         </div>
 
-        <h2 className="mt-4 text-xl font-bold text-white">출석 기회를 모두 소진했습니다!</h2>
+        <h2 id="sos-heart-title" className="mt-4 text-xl font-bold text-white">
+          긴급 SOS 하트 충전
+        </h2>
         <p className="mt-2 text-[13px] leading-relaxed text-zinc-400">
-          24시간 이내에 SOS 하트를 충전하지 않으면 모임에서 완전히 퇴장 처리되며, 지금까지의
-          66일 기록이 중단됩니다.
+          ※ 2muns의 진정성을 위해 챌린지당 최대 5개까지만 충전 가능합니다.
         </p>
-        <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] font-semibold text-amber-200">
-          퇴장까지 남은 시간: {formatGraceCountdown(graceMs)}
+        <p className="mt-3 rounded-xl border border-[#00FF87]/25 bg-[#00FF87]/10 px-3 py-2 text-[13px] font-semibold text-[#00FF87]">
+          충전 가능 잔여: {remainingQuota}개 남음
         </p>
-        <p className="mt-1 text-[11px] text-zinc-500">{groupName}</p>
+
+        {inGrace ? (
+          <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] font-semibold text-amber-200">
+            퇴장까지 남은 시간: {formatGraceCountdown(graceMs)}
+          </p>
+        ) : null}
+
+        <ul className="mt-4 space-y-2">
+          {SOS_HEART_PACKAGES.map((pkg) => {
+            const disabled = busy || atCap || pkg.quantity > remainingQuota;
+            return (
+              <li key={pkg.id}>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => void buy(pkg.quantity)}
+                  className="flex w-full items-center justify-between rounded-xl border border-zinc-700 bg-zinc-900/60 px-4 py-3 text-left transition-colors hover:border-[#00FF87]/40 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <span>
+                    <span className="block text-sm font-semibold text-white">{pkg.title}</span>
+                    <span className="text-[12px] text-zinc-500">{pkg.priceLabel}</span>
+                  </span>
+                  {busy ? (
+                    <Loader2 size={18} className="animate-spin text-zinc-400" />
+                  ) : (
+                    <span className="text-[12px] font-bold text-[#00FF87]">충전</span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
 
         {atCap ? (
           <p className="mt-4 rounded-xl border border-zinc-700 bg-zinc-900/80 px-3 py-3 text-[13px] text-zinc-300">
-            해당 챌린지에서 충전 가능한 최대 하트(5개)를 모두 소진했습니다.
+            해당 챌린지에서 충전 가능한 최대 하트(5개)를 모두 사용했습니다.
           </p>
-        ) : (
-          <ul className="mt-4 space-y-2">
-            {SOS_HEART_PACKAGES.map((pkg) => {
-              const disabled = busy || pkg.quantity > remainingQuota;
-              return (
-                <li key={pkg.id}>
-                  <button
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => void buy(pkg.quantity)}
-                    className="flex w-full items-center justify-between rounded-xl border border-zinc-700 bg-zinc-900/60 px-4 py-3 text-left transition-colors hover:border-[#00FF87]/40 disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    <span>
-                      <span className="block text-sm font-semibold text-white">{pkg.title}</span>
-                      <span className="text-[12px] text-zinc-500">{pkg.priceLabel}</span>
-                    </span>
-                    {busy ? (
-                      <Loader2 size={18} className="animate-spin text-zinc-400" />
-                    ) : (
-                      <span className="text-[12px] font-bold text-[#00FF87]">충전</span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-
-        <p className="mt-4 text-[11px] leading-relaxed text-zinc-500">
-          ※ 2muns의 진정성을 위해 한 챌린지당 최대 5개까지만 충전할 수 있습니다.
-          <br />
-          현재 충전 가능 수량: {remainingQuota}개
-        </p>
+        ) : null}
       </div>
     </div>,
     host,
