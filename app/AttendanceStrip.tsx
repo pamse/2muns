@@ -134,12 +134,16 @@ export function AttendanceStrip({
         {onLivesClick ? (
           <button
             type="button"
-            onClick={onLivesClick}
-            className={`${chipClass} transition-colors hover:border-[#00FF87]/40`}
+            aria-label="SOS 하트 충전"
+            onClick={(event) => {
+              event.stopPropagation();
+              onLivesClick();
+            }}
+            className={`${chipClass} cursor-pointer transition-colors hover:border-[#00FF87]/40 active:scale-[0.98]`}
           >
             {livesLabel}
             <span
-              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#00FF87]/15 text-[#00FF87]"
+              className="pointer-events-none inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#00FF87]/15 text-[#00FF87]"
               aria-hidden
             >
               <Plus size={12} strokeWidth={2.8} />

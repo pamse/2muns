@@ -3,6 +3,32 @@ import type { Verification } from "@/lib/database.types";
 
 const BUCKET = "verifications";
 
+type SupabaseErrorShape = {
+  message?: string;
+  details?: string;
+  hint?: string;
+  code?: string;
+  status?: number;
+};
+
+export function logShortsModalSupabaseError(
+  context: string,
+  error: SupabaseErrorShape | null | undefined,
+  meta?: Record<string, unknown>,
+) {
+  if (!error) return;
+  console.error("[Shorts Modal Supabase Error]", error.message, error.details, error.hint, {
+    context,
+    code: error.code,
+    status: error.status,
+    ...meta,
+  });
+}
+
+function normalizeUserId(userId: string) {
+  return String(userId ?? "").trim().toLowerCase();
+}
+
 function safeSegment(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -18,29 +44,152 @@ export function verificationObjectPath(
 }
 
 export function verificationVideoUrl(path: string) {
+  const trimmed = path.trim();
   if (
-    path.startsWith("http://") ||
-    path.startsWith("https://") ||
-    path.startsWith("blob:")
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("blob:")
   ) {
-    return path;
+    return trimmed;
   }
-  const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
+  const objectPath = trimmed.replace(/^verifications\//, "");
+  const { data } = supabase.storage.from(BUCKET).getPublicUrl(objectPath);
   return data.publicUrl;
+}
+
+const VERIFICATION_SELECT_COLUMNS = [
+  "id, group_id, user_id, day, comment, video_path, created_at",
+  "group_id, user_id, day, comment, video_path",
+  "group_id, user_id, day, video_path",
+  "day, video_path, user_id",
+] as const;
+
+async function selectVerificationsForDay(
+  groupId: string,
+  day: number,
+): Promise<Verification[]> {
+  const gid = groupId.trim();
+  let lastError: SupabaseErrorShape | null = null;
+
+  for (const columns of VERIFICATION_SELECT_COLUMNS) {
+    const { data, error } = await supabase
+      .from("verifications")
+      .select(columns)
+      .eq("group_id", gid)
+      .eq("day", day);
+
+    if (!error) {
+      return (data ?? []) as unknown as Verification[];
+    }
+
+    lastError = error as SupabaseErrorShape;
+    logShortsModalSupabaseError("selectVerificationsForDay", lastError, {
+      groupId: gid,
+      day,
+      columns,
+    });
+
+    const msg = (lastError.message ?? "").toLowerCase();
+    const missingColumn =
+      lastError.code === "PGRST204" ||
+      lastError.code === "42703" ||
+      msg.includes("column") ||
+      lastError.status === 400;
+    if (!missingColumn) break;
+  }
+
+  throw new Error(lastError?.message || "인증 기록을 불러오지 못했습니다.");
 }
 
 /** 모임·일차별 인증 row (Storage path → `verificationVideoUrl`) */
 export async function fetchVerifications(groupId: string, day: number) {
-  const { data, error } = await supabase
-    .from("verifications")
-    .select("*")
-    .eq("group_id", groupId)
-    .eq("day", day);
+  return selectVerificationsForDay(groupId, day);
+}
 
-  if (error) {
-    throw new Error(error.message || "인증 기록을 불러오지 못했습니다.");
+/**
+ * 주차 숏츠: 현재 유저의 일차 구간 인증.
+ * RoomDetail과 동일하게 `group_id` + `day` 조회 후 user_id 매칭 (range 쿼리 400 회피).
+ */
+export async function fetchUserVerificationsInRange(
+  groupId: string,
+  userId: string,
+  fromDay: number,
+  toDay: number,
+): Promise<Verification[]> {
+  const gid = groupId.trim();
+  const uid = normalizeUserId(userId);
+  if (!gid || !uid || fromDay > toDay) return [];
+
+  const results: Verification[] = [];
+  const failures: string[] = [];
+
+  for (let day = fromDay; day <= toDay; day += 1) {
+    try {
+      const rows = await selectVerificationsForDay(gid, day);
+      const mine = rows.find(
+        (row) => normalizeUserId(row.user_id) === uid,
+      );
+      if (mine?.video_path?.trim()) {
+        results.push(mine);
+      }
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "인증 영상을 불러오지 못했습니다.";
+      failures.push(`day ${day}: ${message}`);
+      console.error("[Shorts Modal Supabase Error]", message, undefined, undefined, {
+        context: "fetchUserVerificationsInRange/day",
+        groupId: gid,
+        userId: uid,
+        day,
+      });
+    }
   }
-  return (data ?? []) as Verification[];
+
+  if (results.length === 0 && failures.length === toDay - fromDay + 1) {
+    throw new Error(failures[0] ?? "인증 영상을 불러오지 못했습니다.");
+  }
+
+  results.sort((a, b) => a.day - b.day);
+  return results;
+}
+
+export function fileExtensionForVideoPath(path: string): string {
+  const lower = path.trim().toLowerCase();
+  if (lower.endsWith(".mp4")) return "mp4";
+  if (lower.endsWith(".mov")) return "mov";
+  if (lower.endsWith(".webm")) return "webm";
+  return "webm";
+}
+
+/** Storage 공개 URL → Blob (깨진 에러 JSON 방지) */
+export async function fetchVerificationVideoBlob(videoUrl: string): Promise<Blob> {
+  const response = await fetch(videoUrl, { mode: "cors" });
+  if (!response.ok) {
+    const bodySnippet = (await response.text()).slice(0, 200);
+    logShortsModalSupabaseError(
+      "fetchVerificationVideoBlob",
+      { message: `HTTP ${response.status}`, details: bodySnippet },
+      { videoUrl },
+    );
+    throw new Error(`영상 다운로드 실패 (${response.status})`);
+  }
+  const blob = await response.blob();
+  if (blob.size < 256) {
+    throw new Error("영상 파일이 비어 있거나 손상되었습니다.");
+  }
+  return blob;
+}
+
+export function triggerVerificationFileDownload(blob: Blob, filename: string) {
+  const blobUrl = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(blobUrl);
 }
 
 export async function fetchUserVerificationDays(groupId: string, userId: string) {
@@ -51,6 +200,10 @@ export async function fetchUserVerificationDays(groupId: string, userId: string)
     .eq("user_id", userId);
 
   if (error) {
+    logShortsModalSupabaseError("fetchUserVerificationDays", error as SupabaseErrorShape, {
+      groupId,
+      userId,
+    });
     throw new Error(error.message || "인증 기록을 불러오지 못했습니다.");
   }
 
@@ -81,6 +234,9 @@ export async function uploadVerificationVideo(input: {
   });
 
   if (error) {
+    logShortsModalSupabaseError("uploadVerificationVideo", error as SupabaseErrorShape, {
+      path,
+    });
     throw new Error(
       error.message || "영상 업로드에 실패했습니다. 다시 시도해주세요.",
     );
@@ -112,6 +268,7 @@ export async function upsertVerification(input: {
     .maybeSingle();
 
   if (error) {
+    logShortsModalSupabaseError("upsertVerification", error as SupabaseErrorShape, row);
     throw new Error(error.message || "인증 기록 저장에 실패했습니다.");
   }
 

@@ -44,7 +44,7 @@ import { AttendanceStrip, ATTENDANCE_LIVES } from "./AttendanceStrip";
 import { MunsyProgressCard } from "./MunsyProgressCard";
 import { PullToRefresh } from "./PullToRefresh";
 import { Avatar, BottomSheet, Card, Pill } from "./ui";
-import { WeeklyShortsModal } from "./WeeklyShortsModal";
+import { WeeklyShortsModal } from "@/components/WeeklyShortsModal";
 import {
   addDaysToKey,
   challengeDayNumber,
@@ -589,18 +589,23 @@ function NicknameLimitModal({
 function WarningBadge({
   miss,
   heartStatus,
+  livesLeft,
 }: {
   miss: number;
   heartStatus?: "active" | "warning" | "kicked";
+  livesLeft?: number;
 }) {
-  if (heartStatus === "warning") {
+  const depleted = (livesLeft ?? ATTENDANCE_LIVES) <= 0;
+  const inGrace = heartStatus === "warning" || (depleted && heartStatus !== "kicked");
+
+  if (inGrace && heartStatus === "warning") {
     return (
       <Pill tone="danger">
         <AlertTriangle size={12} /> ⚠️ 퇴장 위기 (24시간 남음)
       </Pill>
     );
   }
-  if (miss >= 3)
+  if (depleted || miss >= 3)
     return (
       <Pill tone="danger">
         <AlertTriangle size={12} /> 출석 기회 소진
@@ -912,14 +917,46 @@ export function MyTab({
       ? heartState.heartsRemaining
       : computedLivesLeft;
 
+  const sosModalHeartState = useMemo((): MemberHeartState | null => {
+    if (heartState && heartState.status !== "kicked") {
+      return heartState;
+    }
+    if (!started || livesLeft > 0) return null;
+    return {
+      heartsRemaining: 0,
+      heartsPurchasedCount: 0,
+      usedPaidHeart: false,
+      expulsionWarningAt: heartState?.expulsionWarningAt ?? null,
+      status: "warning",
+    };
+  }, [
+    heartState?.expulsionWarningAt,
+    heartState?.heartsPurchasedCount,
+    heartState?.heartsRemaining,
+    heartState?.status,
+    livesLeft,
+    started,
+  ]);
+
+  const openSosModal = useCallback(() => {
+    setShowSosModal(true);
+  }, []);
+
+  const onRunGraceExpulsionChecksRef = useRef(onRunGraceExpulsionChecks);
+  onRunGraceExpulsionChecksRef.current = onRunGraceExpulsionChecks;
+
+  const heartSyncKey = selected?.id && myUserId && started && progress
+    ? `${selected.id}:${myUserId}:${progress.missCount}:${selectedHeartBonus}`
+    : null;
+
   useEffect(() => {
-    if (!selected?.id || !myUserId || !started || !progress) {
+    if (!heartSyncKey || !selected || !myUserId || !progress) {
       setHeartState(null);
       return;
     }
     let cancelled = false;
     void (async () => {
-      await onRunGraceExpulsionChecks?.();
+      await onRunGraceExpulsionChecksRef.current?.();
       if (cancelled) return;
       const synced = await applyHeartAttendanceCheck({
         groupId: selected.id,
@@ -934,15 +971,7 @@ export function MyTab({
     return () => {
       cancelled = true;
     };
-  }, [
-    selected?.id,
-    selected?.name,
-    myUserId,
-    started,
-    progress?.missCount,
-    selectedHeartBonus,
-    onRunGraceExpulsionChecks,
-  ]);
+  }, [heartSyncKey, myUserId, progress?.missCount, selected?.id, selected?.name, selectedHeartBonus]);
 
   useEffect(() => {
     autoSosForWarningKeyRef.current = null;
@@ -957,14 +986,25 @@ export function MyTab({
   }, [myGroups, selected?.id]);
 
   useEffect(() => {
-    if (!selected?.id || heartState?.status !== "warning" || !heartState.expulsionWarningAt) {
-      return;
-    }
-    const key = `${selected.id}:${heartState.expulsionWarningAt}`;
+    if (!selected?.id || !started || livesLeft > 0) return;
+
+    const inDbGrace =
+      heartState?.status === "warning" && Boolean(heartState.expulsionWarningAt);
+    const key = inDbGrace
+      ? `${selected.id}:${heartState!.expulsionWarningAt}`
+      : `${selected.id}:depleted:${progress?.missCount ?? 0}`;
+
     if (autoSosForWarningKeyRef.current === key) return;
     autoSosForWarningKeyRef.current = key;
     setShowSosModal(true);
-  }, [selected?.id, heartState?.status, heartState?.expulsionWarningAt]);
+  }, [
+    selected?.id,
+    started,
+    livesLeft,
+    heartState?.status,
+    heartState?.expulsionWarningAt,
+    progress?.missCount,
+  ]);
 
   const completedHabits = useMemo(() => {
     const merged = new Map<string, Group>();
@@ -1156,6 +1196,7 @@ export function MyTab({
               <WarningBadge
                 miss={progress?.missCount ?? 0}
                 heartStatus={heartState?.status}
+                livesLeft={livesLeft}
               />
             ) : null}
           </div>
@@ -1283,7 +1324,7 @@ export function MyTab({
               totalDays={progress.totalDays}
               verifiedDays={progress.verifiedDays}
               livesLeft={livesLeft}
-              onLivesClick={() => setShowSosModal(true)}
+              onLivesClick={openSosModal}
             />
             <button
               type="button"
@@ -1446,6 +1487,9 @@ export function MyTab({
       <WeeklyShortsModal
         open={showShortsModal}
         onClose={() => setShowShortsModal(false)}
+        groupId={selected?.id ?? ""}
+        userId={myUserId ?? ""}
+        week={shortsWindow?.week ?? 1}
       />
 
       <NicknameLimitModal
@@ -1535,21 +1579,23 @@ export function MyTab({
         onConfirm={() => void handleQuit()}
       />
 
-      {selected && myUserId && started ? (
-        <SosHeartRechargeModal
-          open={showSosModal}
-          onClose={() => setShowSosModal(false)}
-          groupId={selected.id}
-          groupName={selected.name}
-          userId={myUserId}
-          heartState={heartState}
-          onRecharged={(next) => {
-            setHeartState(next);
-            setShowSosModal(false);
-          }}
-          onToast={onPointsToast}
-        />
-      ) : null}
+      <SosHeartRechargeModal
+        open={showSosModal}
+        onClose={() => setShowSosModal(false)}
+        groupId={selected?.id ?? ""}
+        groupName={selected?.name ?? "모임"}
+        userId={myUserId ?? ""}
+        heartState={sosModalHeartState}
+        onRecharged={(next) => {
+          setHeartState(next);
+          setShowSosModal(false);
+        }}
+        onToast={onPointsToast}
+        onGraceExpired={() => {
+          void onRunGraceExpulsionChecksRef.current?.();
+          setHeartState(null);
+        }}
+      />
     </PullToRefresh>
   );
 }

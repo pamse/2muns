@@ -33,16 +33,30 @@ function expulsionNoticeStorageKey(
 
 function isHeartColumnMissing(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const record = error as { code?: string; message?: string };
+  const record = error as { code?: string; message?: string; status?: number };
   const msg = (record.message ?? "").toLowerCase();
   return (
     record.code === "PGRST204" ||
     record.code === "42703" ||
+    record.code === "22P02" ||
+    record.status === 400 ||
+    msg.includes("bad request") ||
+    msg.includes("invalid input syntax") ||
+    msg.includes("member_status") ||
     msg.includes("hearts_remaining") ||
     msg.includes("expulsion_warning_at") ||
     (msg.includes("status") && msg.includes("column"))
   );
 }
+
+/** DB 조회 실패 시 SOS 모달 UI용 기본값 */
+export const SOS_MODAL_FALLBACK_STATE: MemberHeartState = {
+  heartsRemaining: 0,
+  heartsPurchasedCount: 0,
+  usedPaidHeart: false,
+  expulsionWarningAt: null,
+  status: "warning",
+};
 
 function readStatus(row: {
   status?: string | null;
@@ -63,58 +77,94 @@ export function computeHeartsRemaining(
   return Math.max(0, pool - Math.max(0, missCount));
 }
 
-export function graceRemainingMs(expulsionWarningAt: string | null, nowMs = Date.now()): number {
-  if (!expulsionWarningAt) return GRACE_PERIOD_MS;
-  const started = new Date(expulsionWarningAt).getTime();
-  if (Number.isNaN(started)) return 0;
-  return Math.max(0, GRACE_PERIOD_MS - (nowMs - started));
+export function graceRemainingMs(
+  expulsionWarningAt: string | null,
+  nowMs = Date.now(),
+  fallbackStartMs?: number | null,
+): number {
+  let startedMs: number | null = null;
+  if (expulsionWarningAt) {
+    const parsed = new Date(expulsionWarningAt).getTime();
+    if (!Number.isNaN(parsed)) startedMs = parsed;
+  } else if (fallbackStartMs != null && !Number.isNaN(fallbackStartMs)) {
+    startedMs = fallbackStartMs;
+  }
+  if (startedMs == null) return GRACE_PERIOD_MS;
+  const remaining = GRACE_PERIOD_MS - (nowMs - startedMs);
+  return Math.min(Math.max(0, remaining), GRACE_PERIOD_MS);
+}
+
+export function parseGraceCountdownMs(ms: number): {
+  hours: number;
+  minutes: number;
+  seconds: number;
+} {
+  if (ms <= 0) return { hours: 0, minutes: 0, seconds: 0 };
+  const totalSec = Math.floor(ms / 1000);
+  return {
+    hours: Math.floor(totalSec / 3600),
+    minutes: Math.floor((totalSec % 3600) / 60),
+    seconds: totalSec % 60,
+  };
+}
+
+/** 시·분·초 — 조건 없이 항상 `{n}시간 {n}분 {n}초` */
+export function formatGraceCountdownWithSeconds(ms: number): string {
+  const { hours, minutes, seconds } = parseGraceCountdownMs(ms);
+  return `${hours}시간 ${minutes}분 ${seconds}초`;
 }
 
 export function formatGraceCountdown(ms: number): string {
-  const totalMinutes = Math.ceil(ms / 60_000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours <= 0) return `${minutes}분`;
-  return `${hours}시간 ${minutes}분`;
+  return formatGraceCountdownWithSeconds(ms);
 }
 
 export async function fetchMemberHeartState(
   groupId: string,
   userId: string,
 ): Promise<MemberHeartState | null> {
-  if (!groupId || !userId) return null;
+  if (!groupId?.trim() || !userId?.trim()) return null;
 
-  const { data, error } = await supabase
-    .from("group_members")
-    .select(
-      "hearts_remaining, hearts_purchased_count, expulsion_warning_at, status, member_status",
-    )
-    .eq("group_id", groupId)
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) {
-    if (isHeartColumnMissing(error)) return null;
-    console.error("fetchMemberHeartState failed", error);
-    return null;
-  }
-  if (!data) return null;
-
-  const row = data as {
+  type HeartRow = {
     hearts_remaining?: number;
     hearts_purchased_count?: number;
-    used_paid_heart?: boolean;
     expulsion_warning_at?: string | null;
     status?: string | null;
     member_status?: string | null;
   };
 
+  const columnSets = [
+    "hearts_remaining, hearts_purchased_count, expulsion_warning_at, status",
+    "hearts_remaining, hearts_purchased_count, expulsion_warning_at",
+    "hearts_remaining, hearts_purchased_count",
+  ] as const;
+
+  let data: HeartRow | null = null;
+  for (const columns of columnSets) {
+    const result = await supabase
+      .from("group_members")
+      .select(columns)
+      .eq("group_id", groupId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (!result.error && result.data) {
+      data = result.data as HeartRow;
+      break;
+    }
+    if (result.error && !isHeartColumnMissing(result.error)) {
+      console.error("fetchMemberHeartState failed", result.error);
+      return null;
+    }
+  }
+
+  if (!data) return null;
+
   return {
-    heartsRemaining: Math.max(0, row.hearts_remaining ?? ATTENDANCE_LIVES),
-    heartsPurchasedCount: Math.max(0, row.hearts_purchased_count ?? 0),
-    usedPaidHeart: Boolean(row.used_paid_heart),
-    expulsionWarningAt: row.expulsion_warning_at ?? null,
-    status: readStatus(row),
+    heartsRemaining: Math.max(0, data.hearts_remaining ?? ATTENDANCE_LIVES),
+    heartsPurchasedCount: Math.max(0, data.hearts_purchased_count ?? 0),
+    usedPaidHeart: false,
+    expulsionWarningAt: data.expulsion_warning_at ?? null,
+    status: readStatus(data),
   };
 }
 
@@ -265,7 +315,19 @@ export async function applyHeartAttendanceCheck(input: {
         status: "active",
       };
     }
-    return null;
+    return transitionToGraceIfNeeded({
+      groupId: input.groupId,
+      userId: input.userId,
+      groupName: input.groupName,
+      heartsRemaining: 0,
+      current: {
+        heartsRemaining: 0,
+        heartsPurchasedCount: 0,
+        usedPaidHeart: false,
+        expulsionWarningAt: null,
+        status: "active",
+      },
+    });
   }
 
   const heartsRemaining = computeHeartsRemaining(
