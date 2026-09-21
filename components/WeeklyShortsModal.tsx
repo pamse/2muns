@@ -10,11 +10,11 @@ import {
   verificationVideoUrl,
 } from "@/lib/verifications";
 import {
-  fetchVideoBlobForDownload,
   triggerMp4FileDownload,
   videoSourceTypeForUrl,
   weekHighlightDownloadFilename,
 } from "@/lib/videoFormat";
+import { renderWeeklyShortsHighlightVideo } from "@/lib/weeklyShortsCompositor";
 
 function InstagramIcon() {
   return (
@@ -65,12 +65,6 @@ function buildWeekClips(
     });
   }
   return clips;
-}
-
-function pickDownloadClip(clips: WeekShortClip[]): WeekShortClip | null {
-  const withVideo = clips.filter((c) => c.videoUrl);
-  if (withVideo.length === 0) return null;
-  return withVideo.reduce((best, c) => (c.day > best.day ? c : best));
 }
 
 function ShortsPreview({
@@ -190,14 +184,29 @@ export function WeeklyShortsModal({
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadingClips, setLoadingClips] = useState(false);
   const [clips, setClips] = useState<WeekShortClip[]>([]);
+  const [renderProgress, setRenderProgress] = useState<string | null>(null);
 
   const verifiedCount = useMemo(
     () => clips.filter((c) => c.videoUrl).length,
     [clips],
   );
 
-  const downloadClip = useMemo(() => pickDownloadClip(clips), [clips]);
-  const actualVideoUrl = downloadClip?.videoUrl ?? null;
+  const renderSegments = useMemo(
+    () =>
+      clips
+        .filter((c): c is WeekShortClip & { videoUrl: string } => Boolean(c.videoUrl))
+        .map((c) => ({
+          day: c.day,
+          title: c.title,
+          videoUrl: c.videoUrl,
+        })),
+    [clips],
+  );
+
+  const weekSlots = useMemo(
+    () => clips.map((c) => ({ day: c.day, hasVideo: Boolean(c.videoUrl) })),
+    [clips],
+  );
 
   useEffect(() => {
     if (!open) {
@@ -259,48 +268,55 @@ export function WeeklyShortsModal({
     };
   }, [open, groupId, userId, week]);
 
+  async function buildHighlightBlob() {
+    return renderWeeklyShortsHighlightVideo({
+      segments: renderSegments,
+      weekSlots,
+      doubleSpeed,
+      onProgress: (message) => setRenderProgress(message),
+    });
+  }
+
   async function handleDownload() {
     if (downloading) return;
-    if (!actualVideoUrl) {
+    if (renderSegments.length === 0) {
       window.alert("다운로드할 인증 영상이 없습니다.");
       return;
     }
 
     setActionError(null);
     setDownloading(true);
+    setRenderProgress("숏츠 영상 제작 중...");
     try {
-      const mp4Blob = await fetchVideoBlobForDownload(actualVideoUrl);
+      const mp4Blob = await buildHighlightBlob();
       triggerMp4FileDownload(mp4Blob, weekHighlightDownloadFilename(week));
       setSaved(true);
     } catch (err) {
       console.error("Download error:", err);
       const message =
         err instanceof Error ? err.message : "영상 저장에 실패했습니다.";
-      logShortsModalSupabaseError(
-        "WeeklyShortsModal.download",
-        { message },
-        { actualVideoUrl },
-      );
+      logShortsModalSupabaseError("WeeklyShortsModal.download", { message });
       setSaved(false);
       window.alert(message);
       setActionError(message);
-      window.open(actualVideoUrl, "_blank", "noopener,noreferrer");
     } finally {
       setDownloading(false);
+      setRenderProgress(null);
     }
   }
 
   async function handleShareReels() {
     if (sharing || downloading) return;
-    if (!actualVideoUrl) {
+    if (renderSegments.length === 0) {
       window.alert("공유할 인증 영상이 없습니다.");
       return;
     }
 
     setActionError(null);
     setSharing(true);
+    setRenderProgress("숏츠 영상 제작 중...");
     try {
-      const mp4Blob = await fetchVideoBlobForDownload(actualVideoUrl);
+      const mp4Blob = await buildHighlightBlob();
       const file = new File([mp4Blob], weekHighlightDownloadFilename(week), {
         type: "video/mp4",
       });
@@ -323,6 +339,7 @@ export function WeeklyShortsModal({
       }
     } finally {
       setSharing(false);
+      setRenderProgress(null);
     }
   }
 
@@ -350,6 +367,15 @@ export function WeeklyShortsModal({
       {actionError ? (
         <p className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-[13px] text-red-200">
           {actionError}
+        </p>
+      ) : null}
+      {renderProgress ? (
+        <p
+          role="status"
+          className="mb-4 flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 text-[13px] font-medium text-zinc-200"
+        >
+          <Loader2 size={16} className="animate-spin text-[#00FF87]" />
+          {renderProgress}
         </p>
       ) : null}
       {saved && (
@@ -421,7 +447,7 @@ export function WeeklyShortsModal({
           className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#00FF87] text-sm font-bold text-black transition-[filter] hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
         >
           {downloading ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
-          MP4 영상 저장하기
+          {downloading ? "숏츠 영상 제작 중..." : "MP4 영상 저장하기"}
         </button>
 
         <div className="rounded-xl bg-[linear-gradient(45deg,#f9ce34,#ee2a7b,#6228d7)] p-[1.5px]">
@@ -438,7 +464,8 @@ export function WeeklyShortsModal({
       </div>
 
       <p className="mt-3 text-center text-[11px] text-gray-500">
-        이번 주 마지막 인증 영상을 MP4 파일로 저장합니다. 7일 합본은 추후 제공 예정입니다.
+        저장 시 9:16 오버레이(2müns·DAY·프로그레스)가 합성된 주차 하이라이트 MP4가
+        생성됩니다. 인증한 일차 영상이 순서대로 이어집니다.
       </p>
 
       <p className="mt-4 text-xs leading-relaxed text-gray-400">
