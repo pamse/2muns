@@ -7,8 +7,12 @@ export const SHORTS_CANVAS_WIDTH = 1080;
 export const SHORTS_CANVAS_HEIGHT = 1920;
 
 const SEGMENT_FALLBACK_SEC = 3;
+const CLIP_WALL_MS = 3000;
+const CLIP_WALL_MS_FAST = 1500;
 const RECORD_FPS = 30;
-const MIN_HIGHLIGHT_BYTES = 20_000;
+const FRAME_INTERVAL_MS = 1000 / RECORD_FPS;
+const MIN_HIGHLIGHT_BYTES = 500_000;
+const POST_RECORD_BUFFER_MS = 500;
 
 export type WeeklyShortsRenderClip = {
   day: number;
@@ -150,6 +154,8 @@ function pickCanvasRecorderMimeType(): string {
     "video/mp4;codecs=avc1",
     "video/mp4;codecs=h264",
     "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
     "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm",
@@ -167,7 +173,62 @@ function delay(ms: number) {
   });
 }
 
-/** iOS Safari: 오프스크린 DOM 부착 시 decode/seek 안정화 */
+type CanvasCaptureTrack = MediaStreamTrack & { requestFrame?: () => void };
+
+function requestCanvasFrame(canvasVideoStream: MediaStream) {
+  const track = canvasVideoStream.getVideoTracks()[0] as CanvasCaptureTrack | undefined;
+  track?.requestFrame?.();
+}
+
+/** iOS Safari: canvas-only MediaRecorder 조기 종료 방지 */
+function createCanvasPlusSilentAudioStream(canvas: HTMLCanvasElement): {
+  combinedStream: MediaStream;
+  canvasVideoStream: MediaStream;
+  resumeAudio: () => Promise<void>;
+  cleanup: () => void;
+} {
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtx) {
+    throw new Error("AudioContext를 사용할 수 없습니다.");
+  }
+
+  const audioCtx = new AudioCtx();
+  const oscillator = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0;
+  oscillator.connect(gain);
+  const silentDest = audioCtx.createMediaStreamDestination();
+  gain.connect(silentDest);
+  oscillator.start(0);
+
+  const canvasVideoStream = canvas.captureStream(RECORD_FPS);
+  const combinedStream = new MediaStream([
+    ...canvasVideoStream.getVideoTracks(),
+    ...silentDest.stream.getAudioTracks(),
+  ]);
+
+  const cleanup = () => {
+    try {
+      oscillator.stop();
+    } catch {
+      // ignore
+    }
+    void audioCtx.close().catch(() => {});
+    canvasVideoStream.getTracks().forEach((t) => t.stop());
+    silentDest.stream.getTracks().forEach((t) => t.stop());
+    combinedStream.getTracks().forEach((t) => t.stop());
+  };
+
+  return {
+    combinedStream,
+    canvasVideoStream,
+    resumeAudio: () => audioCtx.resume(),
+    cleanup,
+  };
+}
+
 function mountOffscreenVideo(video: HTMLVideoElement): () => void {
   const container = document.createElement("div");
   container.setAttribute("aria-hidden", "true");
@@ -272,28 +333,16 @@ async function seekVideoTo(video: HTMLVideoElement, timeSec: number): Promise<vo
   });
 }
 
-type CanvasCaptureTrack = MediaStreamTrack & { requestFrame?: () => void };
-
-function requestCanvasFrame(stream: MediaStream) {
-  const track = stream.getVideoTracks()[0] as CanvasCaptureTrack | undefined;
-  track?.requestFrame?.();
+function clipWallDurationMs(doubleSpeed: boolean): number {
+  return doubleSpeed ? CLIP_WALL_MS_FAST : CLIP_WALL_MS;
 }
 
-async function isPlaybackAdvancing(video: HTMLVideoElement): Promise<boolean> {
-  try {
-    await video.play();
-  } catch {
-    return false;
-  }
-  if (video.paused) return false;
-  const t0 = video.currentTime;
-  await delay(180);
-  return video.currentTime > t0 + 0.02;
-}
-
-async function renderSegmentFrames(
+/**
+ * 클립당 wall-clock 최소 시간을 보장하며 캔버스에 그림 (Safari 조기 종료 방지).
+ */
+async function playAndDrawClip(
   ctx: CanvasRenderingContext2D,
-  stream: MediaStream,
+  canvasVideoStream: MediaStream,
   video: HTMLVideoElement,
   segment: WeeklyShortsRenderClip,
   weekSlots: WeeklyShortsWeekSlot[],
@@ -304,13 +353,16 @@ async function renderSegmentFrames(
     Number.isFinite(video.duration) && video.duration > 0
       ? Math.min(video.duration, 15)
       : SEGMENT_FALLBACK_SEC;
+
   video.playbackRate = doubleSpeed ? 2 : 1;
-  const effectiveDuration = durationSec / video.playbackRate;
-  const frameIntervalMs = 1000 / RECORD_FPS;
-  const totalFrames = Math.max(
-    RECORD_FPS,
-    Math.ceil(effectiveDuration * RECORD_FPS),
-  );
+  const wallMs = clipWallDurationMs(doubleSpeed);
+
+  await seekVideoTo(video, 0);
+  try {
+    await video.play();
+  } catch {
+    // 재생 차단 시 seek + wall-clock 루프로 대체
+  }
 
   const drawOpts = {
     day: segment.day,
@@ -319,42 +371,33 @@ async function renderSegmentFrames(
     activeSlotIndex,
   };
 
-  const advancing = await isPlaybackAdvancing(video);
+  const wallStart = performance.now();
+  let lastSeekTime = -1;
 
-  if (advancing) {
-    const started = performance.now();
-    const maxMs = effectiveDuration * 1000 + 600;
-    while (performance.now() - started < maxMs) {
-      drawWeeklyShortsFrame(ctx, video, drawOpts);
-      requestCanvasFrame(stream);
-      if (
-        video.ended ||
-        (Number.isFinite(video.duration) &&
-          video.currentTime >= durationSec - 0.06)
-      ) {
-        break;
-      }
-      await delay(frameIntervalMs);
-    }
-    return;
-  }
-
-  video.pause();
-  for (let frame = 0; frame < totalFrames; frame += 1) {
-    const mediaTime = Math.min(
-      (frame / RECORD_FPS) * video.playbackRate,
-      Math.max(0, durationSec - 0.04),
+  while (performance.now() - wallStart < wallMs) {
+    const elapsed = performance.now() - wallStart;
+    const progress = Math.min(1, elapsed / wallMs);
+    const targetMediaTime = Math.min(
+      progress * durationSec,
+      Math.max(0, durationSec - 0.05),
     );
-    await seekVideoTo(video, mediaTime);
+
+    if (video.paused || video.currentTime < targetMediaTime - 0.12) {
+      if (Math.abs(lastSeekTime - targetMediaTime) > 0.03) {
+        await seekVideoTo(video, targetMediaTime);
+        lastSeekTime = targetMediaTime;
+      }
+    }
+
     drawWeeklyShortsFrame(ctx, video, drawOpts);
-    requestCanvasFrame(stream);
-    await delay(frameIntervalMs);
+    requestCanvasFrame(canvasVideoStream);
+    await delay(FRAME_INTERVAL_MS);
   }
 }
 
 async function playSegmentOnCanvas(
   ctx: CanvasRenderingContext2D,
-  stream: MediaStream,
+  canvasVideoStream: MediaStream,
   segment: WeeklyShortsRenderClip,
   weekSlots: WeeklyShortsWeekSlot[],
   activeSlotIndex: number,
@@ -364,9 +407,9 @@ async function playSegmentOnCanvas(
   const unmount = mountOffscreenVideo(video);
 
   try {
-    await renderSegmentFrames(
+    await playAndDrawClip(
       ctx,
-      stream,
+      canvasVideoStream,
       video,
       segment,
       weekSlots,
@@ -408,13 +451,29 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     throw new Error("영상 녹화 코덱을 찾지 못했습니다.");
   }
 
-  const stream = canvas.captureStream(RECORD_FPS);
-  const chunks: Blob[] = [];
+  const {
+    combinedStream,
+    canvasVideoStream,
+    resumeAudio,
+    cleanup: cleanupStreams,
+  } = createCanvasPlusSilentAudioStream(canvas);
 
-  const recorder = new MediaRecorder(stream, {
-    mimeType,
-    videoBitsPerSecond: 2_500_000,
-  });
+  await resumeAudio();
+
+  const chunks: Blob[] = [];
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(combinedStream, {
+      mimeType,
+      videoBitsPerSecond: 2_500_000,
+      audioBitsPerSecond: 128_000,
+    });
+  } catch {
+    recorder = new MediaRecorder(combinedStream, {
+      mimeType,
+      videoBitsPerSecond: 2_500_000,
+    });
+  }
 
   const recorded = new Promise<Blob>((resolve, reject) => {
     recorder.onstop = () => {
@@ -428,7 +487,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     if (event.data.size > 0) chunks.push(event.data);
   };
 
-  recorder.start(250);
+  recorder.start(200);
   onProgress?.("숏츠 영상 제작 중...");
 
   const warmupOpts = {
@@ -437,10 +496,10 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     weekSlots,
     activeSlotIndex: 0,
   };
-  for (let i = 0; i < 8; i += 1) {
+  for (let i = 0; i < 10; i += 1) {
     drawWeeklyShortsFrame(ctx, null, warmupOpts);
-    requestCanvasFrame(stream);
-    await delay(1000 / RECORD_FPS);
+    requestCanvasFrame(canvasVideoStream);
+    await delay(FRAME_INTERVAL_MS);
   }
 
   try {
@@ -452,7 +511,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       onProgress?.(`DAY ${segment.day} 합성 중...`);
       await playSegmentOnCanvas(
         ctx,
-        stream,
+        canvasVideoStream,
         segment,
         weekSlots,
         activeSlotIndex,
@@ -466,19 +525,23 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       weekSlots,
       activeSlotIndex: weekSlots.length - 1,
     });
-    requestCanvasFrame(stream);
-    await delay(400);
+    requestCanvasFrame(canvasVideoStream);
+    await delay(POST_RECORD_BUFFER_MS);
   } finally {
     if (recorder.state !== "inactive") {
       recorder.stop();
     }
-    stream.getTracks().forEach((t) => t.stop());
+    cleanupStreams();
   }
 
   const raw = await recorded;
+  const expectedMinMs =
+    segments.length * clipWallDurationMs(doubleSpeed) + POST_RECORD_BUFFER_MS;
+
   if (raw.size < MIN_HIGHLIGHT_BYTES) {
     throw new Error(
-      "합성된 영상이 너무 작습니다(모바일 재생 실패). Wi-Fi 환경에서 다시 시도해 주세요.",
+      `합성된 영상 용량이 너무 작습니다(${Math.round(raw.size / 1024)}KB). ` +
+        `약 ${Math.round(expectedMinMs / 1000)}초 분량이 필요합니다. Wi-Fi에서 다시 시도해 주세요.`,
     );
   }
 
