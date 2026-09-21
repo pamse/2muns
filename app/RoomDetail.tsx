@@ -81,7 +81,6 @@ type Seat = {
   isHost?: boolean;
   empty?: boolean;
   videoUrl?: string | null;
-  archived?: boolean;
   canVerify?: boolean;
   comment?: string;
   verifiedAtLabel?: string;
@@ -178,9 +177,11 @@ function buildSeats(
 function VerifyCaptionBadge({
   day,
   comment,
+  verifiedAtLabel,
 }: {
   day: number;
   comment?: string;
+  verifiedAtLabel?: string;
 }) {
   const text = comment?.trim();
   return (
@@ -192,6 +193,11 @@ function VerifyCaptionBadge({
         <span className="max-w-full truncate text-xs font-medium leading-tight text-white">
           {text || "인증 완료"}
         </span>
+        {verifiedAtLabel ? (
+          <span className="mt-0.5 text-[9px] font-medium leading-tight text-zinc-400">
+            {verifiedAtLabel}
+          </span>
+        ) : null}
       </span>
     </div>
   );
@@ -317,8 +323,7 @@ function MemberVerifyCard({
     );
   }
 
-  const verified =
-    Boolean(seat.videoUrl) || Boolean(seat.archived) || Boolean(seat.verifiedAtLabel);
+  const verified = Boolean(seat.videoUrl);
   const clickable = Boolean(seat.canVerify && seat.me && !verified);
 
   return (
@@ -350,18 +355,8 @@ function MemberVerifyCard({
           muted
           playsInline
         />
-      ) : verified ? (
-        <div className="absolute inset-0 bg-gradient-to-br from-zinc-700 to-zinc-950">
-          {seat.avatar ? (
-            <img
-              src={seat.avatar}
-              alt=""
-              className="h-full w-full object-cover opacity-45"
-            />
-          ) : null}
-        </div>
       ) : (
-        <div className="absolute inset-0 flex flex-col items-center justify-center px-2">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-2">
           {seat.me && seat.canVerify ? (
             <div className="flex flex-col items-center">
               <VerifySpeechBubble />
@@ -371,7 +366,10 @@ function MemberVerifyCard({
               </span>
             </div>
           ) : (
-            <WaitingMascot />
+            <>
+              <WaitingMascot />
+              <p className="text-[11px] font-medium text-zinc-500">미인증</p>
+            </>
           )}
         </div>
       )}
@@ -405,7 +403,11 @@ function MemberVerifyCard({
       </div>
 
       {verified ? (
-        <VerifyCaptionBadge day={challengeDay} comment={seat.comment} />
+        <VerifyCaptionBadge
+          day={challengeDay}
+          comment={seat.comment}
+          verifiedAtLabel={seat.verifiedAtLabel}
+        />
       ) : null}
 
       {verified ? (
@@ -492,18 +494,27 @@ function seatsForChallengeDay(
 
   return base.map((seat) => {
     if (seat.empty) {
-      return { ...seat, canVerify: false, archived: false, comment: "", verifiedAtLabel: "" };
+      return {
+        ...seat,
+        canVerify: false,
+        comment: "",
+        verifiedAtLabel: "",
+        videoUrl: null,
+      };
     }
     const row = findVerificationRowForSeat(seat, rows, viewerUserId);
-    const videoUrl = row ? verificationVideoUrl(row.video_path) : null;
-    const verified = Boolean(row);
+    const videoUrl =
+      row?.video_path?.trim() ?
+        verificationVideoUrl(row.video_path.trim())
+      : null;
+    const hasVerification = Boolean(row && videoUrl);
     return {
       ...seat,
       videoUrl,
-      canVerify: Boolean(seat.me && isToday && !verified),
-      archived: false,
-      comment: row?.comment ?? "",
-      verifiedAtLabel: row ? formatVerifiedAt(new Date(row.created_at)) : "",
+      canVerify: Boolean(seat.me && isToday && !hasVerification),
+      comment: row?.comment?.trim().slice(0, 20) ?? "",
+      verifiedAtLabel:
+        row?.created_at ? formatVerifiedAt(new Date(row.created_at)) : "",
     };
   });
 }
@@ -1230,32 +1241,45 @@ export function RoomDetail({
     return () => window.clearInterval(timer);
   }, [fetchGroupDetail, started]);
 
-  useEffect(() => {
-    if (!started) return;
-    let cancelled = false;
+  const loadVerificationsForDay = useCallback(async () => {
+    if (!started || !group.id) return;
     setFeedLoading(true);
     setFeedError(null);
-    void fetchVerifications(group.id, challengeDay)
-      .then((rows) => {
-        if (!cancelled) {
-          setDayRows(filterVerificationsByBlock(rows, blockedUserIds));
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setDayRows([]);
-          setFeedError(
-            error instanceof Error ? error.message : "인증 피드를 불러오지 못했습니다.",
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setFeedLoading(false);
-      });
-    return () => {
-      cancelled = true;
+    try {
+      const rows = await fetchVerifications(group.id, challengeDay);
+      setDayRows(filterVerificationsByBlock(rows, blockedUserIds));
+    } catch (error: unknown) {
+      setDayRows([]);
+      setFeedError(
+        error instanceof Error ? error.message : "인증 피드를 불러오지 못했습니다.",
+      );
+    } finally {
+      setFeedLoading(false);
+    }
+  }, [blockedUserIds, challengeDay, group.id, started]);
+
+  useEffect(() => {
+    if (!started) {
+      setDayRows([]);
+      return;
+    }
+    setDayRows([]);
+    void loadVerificationsForDay();
+  }, [loadVerificationsForDay, started]);
+
+  useEffect(() => {
+    if (!started) return;
+    const refresh = () => {
+      if (document.visibilityState === "hidden") return;
+      void loadVerificationsForDay();
     };
-  }, [group.id, challengeDay, started, blockedUserIds]);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [loadVerificationsForDay, started]);
 
   const refreshCheerMap = useCallback(() => {
     if (!started) return;
@@ -1345,7 +1369,7 @@ export function RoomDetail({
       setModBusy(false);
     }
   }
-  const doneCount = seats.filter((seat) => seat.videoUrl || seat.verifiedAtLabel).length;
+  const doneCount = seats.filter((seat) => Boolean(seat.videoUrl)).length;
 
   function selectDay(nextWeek: number, nextOffset: number) {
     const dayNum = nextWeek * 7 + nextOffset + 1;
@@ -1760,9 +1784,7 @@ export function RoomDetail({
                     userId &&
                     !seat.me &&
                     !seat.empty &&
-                    (Boolean(seat.videoUrl) ||
-                      Boolean(seat.verifiedAtLabel) ||
-                      Boolean(seat.archived))
+                    Boolean(seat.videoUrl)
                       ? () => void handleToggleCheer(seat.id)
                       : undefined
                   }

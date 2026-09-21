@@ -29,6 +29,7 @@ export function verificationVideoUrl(path: string) {
   return data.publicUrl;
 }
 
+/** 모임·일차별 인증 row (Storage path → `verificationVideoUrl`) */
 export async function fetchVerifications(groupId: string, day: number) {
   const { data, error } = await supabase
     .from("verifications")
