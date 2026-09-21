@@ -12,7 +12,6 @@ import {
 import {
   downloadFallbackVerificationVideo,
   triggerMp4FileDownload,
-  videoSourceTypeForUrl,
   weekHighlightDownloadFilename,
 } from "@/lib/videoFormat";
 import { renderWeeklyShortsHighlightVideo } from "@/lib/weeklyShortsCompositor";
@@ -71,33 +70,46 @@ function buildWeekClips(
 function ShortsPreview({
   clips,
   doubleSpeed,
+  videoRef,
+  carouselEnabled = true,
 }: {
   clips: WeekShortClip[];
   doubleSpeed: boolean;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  carouselEnabled?: boolean;
 }) {
   const [index, setIndex] = useState(0);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const clip = clips[index] ?? clips[0];
+  const playableClips = useMemo(
+    () => clips.filter((c): c is WeekShortClip & { videoUrl: string } => Boolean(c.videoUrl)),
+    [clips],
+  );
+  const clip = playableClips[index] ?? playableClips[0];
 
   useEffect(() => {
     setIndex(0);
   }, [clips]);
 
   useEffect(() => {
-    if (clips.length === 0) return;
+    if (!carouselEnabled || playableClips.length === 0) return;
     const ms = doubleSpeed ? 1500 : 3000;
     const id = window.setInterval(() => {
-      setIndex((i) => (i + 1) % clips.length);
+      setIndex((i) => (i + 1) % playableClips.length);
     }, ms);
     return () => window.clearInterval(id);
-  }, [clips.length, doubleSpeed]);
+  }, [playableClips.length, doubleSpeed, carouselEnabled]);
 
   useEffect(() => {
+    if (!carouselEnabled) return;
     const el = videoRef.current;
     if (!el || !clip?.videoUrl) return;
+    el.loop = true;
     el.playbackRate = doubleSpeed ? 2 : 1;
+    if (el.src !== clip.videoUrl) {
+      el.src = clip.videoUrl;
+      el.load();
+    }
     void el.play().catch(() => {});
-  }, [clip?.videoUrl, clip?.day, doubleSpeed]);
+  }, [clip?.videoUrl, clip?.day, doubleSpeed, carouselEnabled, videoRef]);
 
   if (!clip) {
     return (
@@ -107,61 +119,49 @@ function ShortsPreview({
     );
   }
 
+  const activeSlotIndex = clips.findIndex((c) => c.day === clip.day);
+
   return (
-    <div className="relative mx-auto w-[168px] overflow-hidden rounded-[22px] border border-white/15 bg-black shadow-[0_0_28px_#00FF8728]">
-      <div className="relative aspect-[9/16]">
-        {clip.videoUrl ? (
-          <video
-            ref={videoRef}
-            key={clip.videoUrl}
-            crossOrigin="anonymous"
-            autoPlay
-            muted
-            playsInline
-            loop
-            className="absolute inset-0 h-full w-full object-cover"
-          >
-            <source
-              src={clip.videoUrl}
-              type={videoSourceTypeForUrl(clip.videoUrl)}
-            />
-          </video>
-        ) : (
-          <div className="absolute inset-0 bg-black" aria-hidden />
-        )}
-        {!clip.videoUrl ? (
-          <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-[17px] font-extrabold tracking-wide text-white drop-shadow">
-            DAY {clip.day} / 66
-          </p>
-        ) : null}
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/70" />
-        <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/45 px-1.5 py-0.5 backdrop-blur-sm">
-          <Logo className="text-[11px] tracking-wide" />
-        </div>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 px-2.5 pb-2.5">
-          {clip.videoUrl ? (
-            <>
-              <p className="text-center text-[15px] font-extrabold tracking-wide text-white drop-shadow">
-                DAY {clip.day} / 66
-              </p>
-              <p className="mt-0.5 text-center text-[10px] font-medium text-white/80">
-                {clip.title}
-              </p>
-            </>
-          ) : null}
-          <div className="mt-2 flex gap-0.5">
-            {clips.map((c, i) => (
-              <span
-                key={c.day}
-                className={`h-0.5 flex-1 rounded-full ${
-                  i === index ? "bg-[#00FF87]" : c.videoUrl ? "bg-white/45" : "bg-white/20"
-                }`}
-              />
-            ))}
+    <>
+      <video
+        ref={videoRef}
+        crossOrigin="anonymous"
+        autoPlay
+        muted
+        playsInline
+        className="absolute inset-0 z-0 h-full w-full object-cover opacity-100"
+      />
+      {!carouselEnabled ? null : (
+        <>
+          <div className="pointer-events-none absolute inset-0 z-[5] bg-gradient-to-b from-black/45 via-transparent to-black/70" />
+          <div className="pointer-events-none absolute left-2 top-2 z-[5] rounded-md bg-black/45 px-1.5 py-0.5 backdrop-blur-sm">
+            <Logo className="text-[11px] tracking-wide" />
           </div>
-        </div>
-      </div>
-    </div>
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[5] px-2.5 pb-2.5">
+            <p className="text-center text-[15px] font-extrabold tracking-wide text-white drop-shadow">
+              DAY {clip.day} / 66
+            </p>
+            <p className="mt-0.5 text-center text-[10px] font-medium text-white/80">
+              {clip.title}
+            </p>
+            <div className="mt-2 flex gap-0.5">
+              {clips.map((c, i) => (
+                <span
+                  key={c.day}
+                  className={`h-0.5 flex-1 rounded-full ${
+                    i === activeSlotIndex
+                      ? "bg-[#00FF87]"
+                      : c.videoUrl
+                        ? "bg-white/45"
+                        : "bg-white/20"
+                  }`}
+                />
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
@@ -189,6 +189,7 @@ export function WeeklyShortsModal({
   const [renderProgress, setRenderProgress] = useState<string | null>(null);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const compositorMountRef = useRef<HTMLDivElement>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
 
   const appendDebugLog = useCallback((line: string) => {
     setDebugLogs((prev) => [...prev.slice(-19), line]);
@@ -202,6 +203,16 @@ export function WeeklyShortsModal({
       });
     }
     return compositorMountRef.current;
+  }, []);
+
+  const waitPreviewVideo = useCallback(async () => {
+    for (let i = 0; i < 24; i += 1) {
+      if (previewVideoRef.current) return previewVideoRef.current;
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    }
+    return previewVideoRef.current;
   }, []);
 
   const verifiedCount = useMemo(
@@ -297,14 +308,22 @@ export function WeeklyShortsModal({
     { kind: "composited"; blob: Blob } | { kind: "fallback" }
   > {
     const mountEl = await waitCompositorMount();
+    const previewVideo = await waitPreviewVideo();
     appendDebugLog(
       `[0] DOM mount ${mountEl ? `ok ${Math.round(mountEl.clientWidth)}x${Math.round(mountEl.clientHeight)}` : "missing"}`,
     );
+    appendDebugLog(
+      `[0] previewVideo ${previewVideo ? `ok ${previewVideo.videoWidth}x${previewVideo.videoHeight}` : "missing"}`,
+    );
+    if (!previewVideo) {
+      throw new Error("미리보기 비디오를 찾을 수 없습니다. 다시 시도해 주세요.");
+    }
     const result = await renderWeeklyShortsHighlightVideo({
       segments: renderSegments,
       weekSlots,
       doubleSpeed,
       compositorMountEl: mountEl,
+      sharedPreviewVideo: previewVideo,
       onProgress: (message) => setRenderProgress(message),
       onDebugLog: appendDebugLog,
     });
@@ -340,6 +359,9 @@ export function WeeklyShortsModal({
     setDebugLogs([]);
     setDownloading(true);
     setRenderProgress("숏츠 영상 제작 중...");
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
     try {
       const outcome = await composeHighlightOrFallback();
       if (outcome.kind === "composited") {
@@ -374,6 +396,9 @@ export function WeeklyShortsModal({
     setDebugLogs([]);
     setSharing(true);
     setRenderProgress("숏츠 영상 제작 중...");
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
     try {
       const outcome = await composeHighlightOrFallback();
       if (outcome.kind === "fallback") {
@@ -410,6 +435,7 @@ export function WeeklyShortsModal({
   }
 
   const visibleDebugLogs = debugLogs.slice(-5);
+  const exporting = downloading || sharing;
 
   if (!open) return null;
 
@@ -470,27 +496,35 @@ export function WeeklyShortsModal({
           </div>
         ) : null}
 
-        {!loadingClips && !downloading && !sharing ? (
-          <ShortsPreview
-            key={doubleSpeed ? "x2" : "x1"}
-            clips={clips}
-            doubleSpeed={doubleSpeed}
-          />
-        ) : null}
-
-        {downloading || sharing ? (
+        {!loadingClips && verifiedCount > 0 ? (
           <div
-            className="relative overflow-hidden rounded-[22px] border border-[#00FF87]/40 bg-black shadow-[0_0_28px_#00FF8728]"
-            aria-busy="true"
+            className={`relative overflow-hidden rounded-[22px] border bg-black shadow-[0_0_28px_#00FF8728] ${
+              exporting ? "border-[#00FF87]/40" : "border-white/15"
+            }`}
+            aria-busy={exporting}
           >
-            <div ref={compositorMountRef} className="relative aspect-[9/16] w-full" />
-            <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-end bg-gradient-to-t from-black/80 via-transparent to-transparent pb-4">
-              <Loader2 size={22} className="mb-2 animate-spin text-[#00FF87]" />
-              <p className="px-3 text-center text-[11px] font-medium text-zinc-200">
-                {renderProgress ?? "숏츠 영상 제작 중..."}
-              </p>
+            <div ref={compositorMountRef} className="relative aspect-[9/16] w-full">
+              <ShortsPreview
+                clips={clips}
+                doubleSpeed={doubleSpeed}
+                videoRef={previewVideoRef}
+                carouselEnabled={!exporting}
+              />
             </div>
+            {exporting ? (
+              <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-end bg-gradient-to-t from-black/80 via-transparent to-transparent pb-4">
+                <Loader2 size={22} className="mb-2 animate-spin text-[#00FF87]" />
+                <p className="px-3 text-center text-[11px] font-medium text-zinc-200">
+                  {renderProgress ?? "숏츠 영상 제작 중..."}
+                </p>
+              </div>
+            ) : null}
           </div>
+        ) : null}
+        {!loadingClips && verifiedCount === 0 ? (
+          <p className="py-8 text-center text-[13px] text-gray-400">
+            이번 주 인증 영상이 없습니다.
+          </p>
         ) : null}
       </div>
 

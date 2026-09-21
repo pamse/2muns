@@ -213,6 +213,49 @@ function delay(ms: number) {
   });
 }
 
+function wallClockDelay(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function videoSrcMatches(video: HTMLVideoElement, url: string): boolean {
+  if (!video.src) return false;
+  try {
+    return new URL(video.src, window.location.href).href === new URL(url, window.location.href).href;
+  } catch {
+    return video.src.includes(url) || url.includes(video.src);
+  }
+}
+
+async function prepareClipOnVideo(
+  video: HTMLVideoElement,
+  videoUrl: string,
+  doubleSpeed: boolean,
+  debugLog?: (message: string) => void,
+): Promise<void> {
+  video.crossOrigin = "anonymous";
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+  video.setAttribute("playsinline", "");
+  video.loop = false;
+  video.playbackRate = doubleSpeed ? 2 : 1;
+
+  if (!videoSrcMatches(video, videoUrl)) {
+    video.src = videoUrl;
+    video.load();
+    await waitForVideoReady(video);
+  }
+
+  await seekVideoTo(video, 0, 120);
+  try {
+    await video.play();
+  } catch {
+    debugLog?.("video.play() 차단 — wall-clock + seek로 계속");
+  }
+}
+
 type CanvasCaptureTrack = MediaStreamTrack & { requestFrame?: () => void };
 
 function requestCanvasFrame(canvasVideoStream: MediaStream) {
@@ -482,10 +525,7 @@ function clipWallDurationMs(doubleSpeed: boolean): number {
   return doubleSpeed ? CLIP_WALL_MS_FAST : CLIP_WALL_MS;
 }
 
-/**
- * 클립당 고정 프레임 수(30fps × 3초)로 wall-clock·타임라인을 보장.
- * iOS Safari는 currentTime이 0에 고정되므로 프레임마다 수동 seek.
- */
+/** Date.now() wall-clock — 조기 탈출 없이 clipDurationMs 동안 30fps draw */
 async function playAndDrawClip(
   ctx: CanvasRenderingContext2D,
   canvasVideoStream: MediaStream,
@@ -501,34 +541,7 @@ async function playAndDrawClip(
       ? Math.min(video.duration, 15)
       : SEGMENT_FALLBACK_SEC;
 
-  const clipWallSec = clipWallDurationMs(doubleSpeed) / 1000;
-  const totalFrames = Math.max(1, Math.round(clipWallSec * RECORD_FPS));
-  const seekTimeoutMs = isIosWebKit() ? 50 : 120;
-
-  video.playbackRate = doubleSpeed ? 2 : 1;
-  video.muted = true;
-
-  await seekVideoTo(video, 0, seekTimeoutMs);
-
-  let manualTimeline = isIosWebKit();
-  try {
-    await video.play();
-  } catch {
-    manualTimeline = true;
-    debugLog?.(`클립 DAY ${segment.day} autoplay 차단 → 수동 seek 타임라인`);
-  }
-
-  if (!manualTimeline) {
-    const probeT = video.currentTime;
-    await delay(120);
-    if (video.paused || video.currentTime < probeT + 0.04) {
-      manualTimeline = true;
-      debugLog?.(
-        `클립 DAY ${segment.day} 재생 정지 감지 (t=${video.currentTime.toFixed(2)}s) → 수동 seek`,
-      );
-    }
-  }
-
+  const durationMs = clipWallDurationMs(doubleSpeed);
   const drawOpts: FrameDrawOpts = {
     day: segment.day,
     title: segment.title,
@@ -536,50 +549,55 @@ async function playAndDrawClip(
     activeSlotIndex,
   };
 
-  const sampleFrameIndexes = new Set([
-    0,
-    Math.floor(totalFrames * 0.25),
-    Math.floor(totalFrames * 0.5),
-    totalFrames - 1,
-  ]);
+  const startTs = Date.now();
+  let frameCount = 0;
+  let lastSeekAt = 0;
 
-  const clipWallStart = performance.now();
-
-  for (let frameIndex = 0; frameIndex < totalFrames; frameIndex += 1) {
-    const mediaProgress = (frameIndex + 1) / totalFrames;
+  while (Date.now() - startTs < durationMs) {
+    const wallElapsed = Date.now() - startTs;
+    const wallProgress = Math.min(1, wallElapsed / durationMs);
     const targetMediaTime = Math.min(
-      mediaProgress * scrubSpanSec,
+      wallProgress * scrubSpanSec,
       Math.max(0, scrubSpanSec - 0.04),
     );
 
-    const stuckAtZero =
-      frameIndex > 2 && video.currentTime < 0.05 && targetMediaTime > 0.2;
-    if (manualTimeline || video.paused || stuckAtZero || frameIndex === 0) {
-      await seekVideoTo(video, targetMediaTime, seekTimeoutMs);
-    } else if (video.currentTime < targetMediaTime - 0.12) {
-      await seekVideoTo(video, targetMediaTime, seekTimeoutMs);
+    if (video.paused) {
+      void video.play().catch(() => {});
+    }
+
+    const playbackStuck =
+      wallElapsed > 250 &&
+      video.currentTime < 0.05 &&
+      targetMediaTime > 0.15;
+    if (playbackStuck && wallElapsed - lastSeekAt > 80) {
+      lastSeekAt = wallElapsed;
+      await seekVideoTo(video, targetMediaTime, 60);
     }
 
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => resolve());
     });
     commitCompositorFrame(ctx, canvasVideoStream, video, drawOpts);
+    frameCount += 1;
 
-    if (sampleFrameIndexes.has(frameIndex)) {
+    if (
+      frameCount === 1 ||
+      wallElapsed >= durationMs * 0.5 - 25 ||
+      wallElapsed >= durationMs - 40
+    ) {
       const drawOk = video.readyState >= 2 && video.videoWidth > 0;
       debugLog?.(
-        `클립 DAY ${segment.day} f${frameIndex + 1}/${totalFrames} drawImage ${drawOk ? "성공" : "실패"} ` +
-          `t=${video.currentTime.toFixed(2)}s target=${targetMediaTime.toFixed(2)}s manual=${manualTimeline}`,
+        `클립 DAY ${segment.day} drawImage ${drawOk ? "성공" : "실패"} ` +
+          `t=${video.currentTime.toFixed(2)}s wall=${wallElapsed}ms/${durationMs}ms`,
       );
     }
 
-    await delay(FRAME_INTERVAL_MS);
+    await wallClockDelay(FRAME_INTERVAL_MS);
   }
 
-  const clipWallElapsed = performance.now() - clipWallStart;
+  const wallTotal = Date.now() - startTs;
   debugLog?.(
-    `클립 DAY ${segment.day} wall-clock ${Math.round(clipWallElapsed)}ms / ${Math.round(clipWallSec * 1000)}ms, ` +
-      `frames=${totalFrames}, end t=${video.currentTime.toFixed(2)}s`,
+    `클립 DAY ${segment.day} 완료 wall=${wallTotal}ms (목표 ${durationMs}ms) frames=${frameCount} end t=${video.currentTime.toFixed(2)}s`,
   );
 }
 
@@ -592,8 +610,38 @@ async function playSegmentOnCanvas(
   activeSlotIndex: number,
   doubleSpeed: boolean,
   clipIndex: number,
+  sharedPreviewVideo: HTMLVideoElement | null | undefined,
   debugLog?: (message: string) => void,
 ): Promise<void> {
+  if (sharedPreviewVideo) {
+    try {
+      await prepareClipOnVideo(
+        sharedPreviewVideo,
+        segment.videoUrl,
+        doubleSpeed,
+        debugLog,
+      );
+      debugLog?.(
+        `클립 ${clipIndex + 1} (DAY ${segment.day}) 미리보기 video 로드 ${sharedPreviewVideo.videoWidth}x${sharedPreviewVideo.videoHeight}`,
+      );
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown";
+      debugLog?.(`클립 ${clipIndex + 1} (DAY ${segment.day}) 미리보기 로드 실패: ${detail}`);
+      throw err;
+    }
+    await playAndDrawClip(
+      ctx,
+      canvasVideoStream,
+      sharedPreviewVideo,
+      segment,
+      weekSlots,
+      activeSlotIndex,
+      doubleSpeed,
+      debugLog,
+    );
+    return;
+  }
+
   let video: HTMLVideoElement;
   try {
     video = await loadVideoElement(segment.videoUrl, segment.day);
@@ -638,9 +686,18 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   onDebugLog?: (line: string) => void;
   /** 모달 미리보기 영역 — Safari용 가시 캔버스 마운트 */
   compositorMountEl?: HTMLElement | null;
+  /** 모달 미리보기 `<video>` — Safari autoplay·drawImage 소스 */
+  sharedPreviewVideo?: HTMLVideoElement | null;
 }): Promise<WeeklyShortsHighlightResult> {
-  const { segments, weekSlots, doubleSpeed, onProgress, onDebugLog, compositorMountEl } =
-    input;
+  const {
+    segments,
+    weekSlots,
+    doubleSpeed,
+    onProgress,
+    onDebugLog,
+    compositorMountEl,
+    sharedPreviewVideo,
+  } = input;
   let debugStep = 0;
   const logDebug = (message: string) => {
     debugStep += 1;
@@ -666,7 +723,8 @@ export async function renderWeeklyShortsHighlightVideo(input: {
 
   logDebug(
     `캔버스 초기화 완료: ${canvas.width}x${canvas.height} ` +
-      `(pureVideo=${canvasSize.pureVideoCapture}, mount=${Boolean(compositorMountEl)})`,
+      `(pureVideo=${canvasSize.pureVideoCapture}, mount=${Boolean(compositorMountEl)}, ` +
+      `sharedVideo=${Boolean(sharedPreviewVideo)})`,
   );
 
   const stage = createCompositorStage(canvas, compositorMountEl);
@@ -770,6 +828,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
         activeSlotIndex,
         doubleSpeed,
         clipIndex,
+        sharedPreviewVideo,
         logDebug,
       );
     }
@@ -825,7 +884,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       } catch {
         // Safari 구버전
       }
-      await delay(150);
+      await wallClockDelay(500);
       logDebug(`recorder.stop() chunks=${chunks.length} wall=${Math.round(performance.now() - recordWallStart)}ms`);
       recorder.stop();
     }
