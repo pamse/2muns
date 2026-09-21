@@ -1,3 +1,7 @@
+import {
+  contentTypeForBlob,
+  storageExtensionForBlob,
+} from "@/lib/videoFormat";
 import { supabase } from "@/lib/supabase";
 import type { Verification } from "@/lib/database.types";
 
@@ -33,14 +37,32 @@ function safeSegment(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-/** Storage 경로: `{group_id}/{day}/{user_id}.webm` */
+/** Storage 경로: `{group_id}/{day}/{userId}_{day}_{ts}.mp4` (또는 webm fallback) */
 export function verificationObjectPath(
   groupId: string,
   day: number,
   userId: string,
-  _blob?: Blob,
+  blob?: Blob,
 ) {
-  return `${safeSegment(groupId)}/${day}/${safeSegment(userId)}.webm`;
+  const ext = blob ? storageExtensionForBlob(blob) : "mp4";
+  const uid = safeSegment(userId);
+  const stamp = Date.now();
+  if (ext === "mp4") {
+    return `${safeSegment(groupId)}/${day}/${uid}_${day}_${stamp}.mp4`;
+  }
+  return `${safeSegment(groupId)}/${day}/${uid}_${day}_${stamp}.webm`;
+}
+
+/** 일차당 단일 파일 덮어쓰기용 (재업로드 시 동일 키) */
+export function verificationObjectPathForUpsert(
+  groupId: string,
+  day: number,
+  userId: string,
+  blob: Blob,
+) {
+  const ext = storageExtensionForBlob(blob);
+  const uid = safeSegment(userId);
+  return `${safeSegment(groupId)}/${day}/${uid}.${ext}`;
 }
 
 export function verificationVideoUrl(path: string) {
@@ -158,38 +180,7 @@ export function fileExtensionForVideoPath(path: string): string {
   if (lower.endsWith(".mp4")) return "mp4";
   if (lower.endsWith(".mov")) return "mov";
   if (lower.endsWith(".webm")) return "webm";
-  return "webm";
-}
-
-/** Storage 공개 URL → Blob (깨진 에러 JSON 방지) */
-export async function fetchVerificationVideoBlob(videoUrl: string): Promise<Blob> {
-  const response = await fetch(videoUrl, { mode: "cors" });
-  if (!response.ok) {
-    const bodySnippet = (await response.text()).slice(0, 200);
-    logShortsModalSupabaseError(
-      "fetchVerificationVideoBlob",
-      { message: `HTTP ${response.status}`, details: bodySnippet },
-      { videoUrl },
-    );
-    throw new Error(`영상 다운로드 실패 (${response.status})`);
-  }
-  const blob = await response.blob();
-  if (blob.size < 256) {
-    throw new Error("영상 파일이 비어 있거나 손상되었습니다.");
-  }
-  return blob;
-}
-
-export function triggerVerificationFileDownload(blob: Blob, filename: string) {
-  const blobUrl = window.URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = blobUrl;
-  a.download = filename;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  window.URL.revokeObjectURL(blobUrl);
+  return "mp4";
 }
 
 export async function fetchUserVerificationDays(groupId: string, userId: string) {
@@ -221,15 +212,16 @@ export async function uploadVerificationVideo(input: {
   day: number;
   blob: Blob;
 }) {
-  const path = verificationObjectPath(
+  const path = verificationObjectPathForUpsert(
     input.groupId,
     input.day,
     input.userId,
     input.blob,
   );
+  const contentType = contentTypeForBlob(input.blob);
   const { error } = await supabase.storage.from(BUCKET).upload(path, input.blob, {
     upsert: true,
-    contentType: "video/webm",
+    contentType,
     cacheControl: "3600",
   });
 

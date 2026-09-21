@@ -19,6 +19,7 @@ import {
   type ReportReason,
 } from "@/lib/moderation";
 import { verificationVideoUrl } from "@/lib/verifications";
+import { videoSourceTypeForUrl } from "@/lib/videoFormat";
 import { cacheBustAvatarUrl } from "@/lib/profile";
 import { normalizeGroupId } from "./data";
 
@@ -177,13 +178,17 @@ export function PublicProfileView({
                     >
                       <div className="relative aspect-[3/4] bg-black">
                         <video
-                          src={verificationVideoUrl(card.videoPath)}
                           className="h-full w-full object-cover"
                           muted
                           playsInline
                           loop
                           autoPlay
-                        />
+                        >
+                          <source
+                            src={verificationVideoUrl(card.videoPath)}
+                            type={videoSourceTypeForUrl(card.videoPath)}
+                          />
+                        </video>
                       </div>
                       <div className="px-2.5 py-2">
                         <p className="truncate text-[12px] font-semibold text-white">

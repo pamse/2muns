@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, Loader2, RotateCcw, SwitchCamera, X } from "lucide-react";
+import {
+  getSupportedVerificationMimeType,
+  pickMediaRecorderOptions,
+} from "@/lib/videoFormat";
 
 type Phase = "live" | "countdown" | "recording" | "review";
 type FacingMode = "user" | "environment";
@@ -13,17 +17,6 @@ const VIDEO_BASE: MediaTrackConstraints = {
   height: { ideal: 1280 },
   frameRate: { ideal: 30 },
 };
-
-function pickRecorderOptions(): MediaRecorderOptions | undefined {
-  const types = [
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-    "video/mp4",
-  ];
-  const mimeType = types.find((type) => MediaRecorder.isTypeSupported(type));
-  return mimeType ? { mimeType, videoBitsPerSecond: 1_500_000 } : undefined;
-}
 
 function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop());
@@ -86,6 +79,7 @@ export function CameraVerifyModal({
   const [count, setCount] = useState(3);
   const [recLeft, setRecLeft] = useState(3);
   const [reviewUrl, setReviewUrl] = useState<string | null>(null);
+  const [reviewMime, setReviewMime] = useState("video/mp4");
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [comment, setComment] = useState("");
@@ -230,7 +224,7 @@ export function CameraVerifyModal({
     }
 
     chunksRef.current = [];
-    const recorder = new MediaRecorder(stream, pickRecorderOptions());
+    const recorder = new MediaRecorder(stream, pickMediaRecorderOptions());
     recorderRef.current = recorder;
 
     recorder.ondataavailable = (event) => {
@@ -247,7 +241,7 @@ export function CameraVerifyModal({
     recorder.onstop = () => {
       if (closedRef.current) return;
       const blob = new Blob(chunksRef.current, {
-        type: recorder.mimeType || "video/webm",
+        type: recorder.mimeType || getSupportedVerificationMimeType() || "video/mp4",
       });
       const url = URL.createObjectURL(blob);
       if (reviewUrlRef.current) {
@@ -255,6 +249,7 @@ export function CameraVerifyModal({
       }
       reviewBlobRef.current = blob;
       reviewUrlRef.current = url;
+      setReviewMime(blob.type || getSupportedVerificationMimeType() || "video/mp4");
       setReviewUrl(url);
       setPhase("review");
     };
@@ -382,13 +377,14 @@ export function CameraVerifyModal({
         {phase === "review" && reviewUrl ? (
           <video
             key={reviewUrl}
-            src={reviewUrl}
             className="h-full w-full object-cover"
             autoPlay
             loop
             playsInline
             muted
-          />
+          >
+            <source src={reviewUrl} type={reviewMime.split(";")[0] || "video/mp4"} />
+          </video>
         ) : null}
 
         {phase === "countdown" && (

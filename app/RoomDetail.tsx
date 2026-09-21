@@ -39,6 +39,7 @@ import {
   submitVerification,
   verificationVideoUrl,
 } from "@/lib/verifications";
+import { videoSourceTypeForUrl } from "@/lib/videoFormat";
 import {
   applyCheerToggleLocal,
   fetchCheersForDay,
@@ -348,13 +349,17 @@ function MemberVerifyCard({
       {verified && seat.videoUrl ? (
         <video
           key={seat.videoUrl}
-          src={seat.videoUrl}
           className="absolute inset-0 h-full w-full rounded-2xl object-cover"
           autoPlay
           loop
           muted
           playsInline
-        />
+        >
+          <source
+            src={seat.videoUrl}
+            type={videoSourceTypeForUrl(seat.videoUrl)}
+          />
+        </video>
       ) : (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-2">
           {seat.me && seat.canVerify ? (

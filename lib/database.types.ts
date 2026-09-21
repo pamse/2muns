@@ -176,7 +176,7 @@ export type Database = {
           day: number;
           /** 최대 20자 (DB check) */
           comment: string | null;
-          /** Storage object path, e.g. {group_id}/{day}/{user_id}.webm */
+          /** Storage object path, e.g. {group_id}/{day}/{user_id}.mp4 */
           video_path: string;
           created_at: string;
         };

@@ -6,10 +6,15 @@ import { Download, Loader2 } from "lucide-react";
 import { BottomSheet, Logo } from "@/app/ui";
 import {
   fetchUserVerificationsInRange,
-  fileExtensionForVideoPath,
   logShortsModalSupabaseError,
   verificationVideoUrl,
 } from "@/lib/verifications";
+import {
+  fetchVideoBlobForDownload,
+  triggerMp4FileDownload,
+  videoSourceTypeForUrl,
+  weekHighlightDownloadFilename,
+} from "@/lib/videoFormat";
 
 function InstagramIcon() {
   return (
@@ -114,13 +119,17 @@ function ShortsPreview({
           <video
             ref={videoRef}
             key={clip.videoUrl}
-            src={clip.videoUrl}
             autoPlay
             muted
             playsInline
             loop
             className="absolute inset-0 h-full w-full object-cover"
-          />
+          >
+            <source
+              src={clip.videoUrl}
+              type={videoSourceTypeForUrl(clip.videoUrl)}
+            />
+          </video>
         ) : (
           <div className="absolute inset-0 bg-black" aria-hidden />
         )}
@@ -250,18 +259,6 @@ export function WeeklyShortsModal({
     };
   }, [open, groupId, userId, week]);
 
-  async function blobFromActualVideoUrl(url: string): Promise<Blob> {
-    const res = await fetch(url, { mode: "cors" });
-    if (!res.ok) {
-      throw new Error(`파일 다운로드 실패 (${res.status})`);
-    }
-    const blob = await res.blob();
-    if (blob.size < 256) {
-      throw new Error("다운로드한 파일이 비어 있거나 손상되었습니다.");
-    }
-    return blob;
-  }
-
   async function handleDownload() {
     if (downloading) return;
     if (!actualVideoUrl) {
@@ -272,30 +269,21 @@ export function WeeklyShortsModal({
     setActionError(null);
     setDownloading(true);
     try {
-      const blob = await blobFromActualVideoUrl(actualVideoUrl);
-      const ext = downloadClip?.videoPath
-        ? fileExtensionForVideoPath(downloadClip.videoPath)
-        : "webm";
-      const blobUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = `2muns_week${week}_highlight.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(blobUrl);
+      const mp4Blob = await fetchVideoBlobForDownload(actualVideoUrl);
+      triggerMp4FileDownload(mp4Blob, weekHighlightDownloadFilename(week));
       setSaved(true);
     } catch (err) {
       console.error("Download error:", err);
+      const message =
+        err instanceof Error ? err.message : "영상 저장에 실패했습니다.";
       logShortsModalSupabaseError(
         "WeeklyShortsModal.download",
-        { message: err instanceof Error ? err.message : "download failed" },
+        { message },
         { actualVideoUrl },
       );
       setSaved(false);
-      setActionError(
-        err instanceof Error ? err.message : "영상 저장에 실패했습니다.",
-      );
+      window.alert(message);
+      setActionError(message);
       window.open(actualVideoUrl, "_blank", "noopener,noreferrer");
     } finally {
       setDownloading(false);
@@ -312,12 +300,9 @@ export function WeeklyShortsModal({
     setActionError(null);
     setSharing(true);
     try {
-      const blob = await blobFromActualVideoUrl(actualVideoUrl);
-      const ext = downloadClip?.videoPath
-        ? fileExtensionForVideoPath(downloadClip.videoPath)
-        : "webm";
-      const file = new File([blob], `2muns_week${week}_highlight.${ext}`, {
-        type: blob.type || `video/${ext}`,
+      const mp4Blob = await fetchVideoBlobForDownload(actualVideoUrl);
+      const file = new File([mp4Blob], weekHighlightDownloadFilename(week), {
+        type: "video/mp4",
       });
       const nav = navigator as Navigator & {
         canShare?: (data: ShareData) => boolean;
@@ -453,7 +438,7 @@ export function WeeklyShortsModal({
       </div>
 
       <p className="mt-3 text-center text-[11px] text-gray-500">
-        이번 주 마지막 인증일 원본(.webm)을 저장합니다. 7일 합본은 추후 제공 예정입니다.
+        이번 주 마지막 인증 영상을 MP4 파일로 저장합니다. 7일 합본은 추후 제공 예정입니다.
       </p>
 
       <p className="mt-4 text-xs leading-relaxed text-gray-400">

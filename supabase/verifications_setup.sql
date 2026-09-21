@@ -1,8 +1,8 @@
 -- 2müns · 인증 백엔드 1단계: verifications 테이블 + Storage 버킷
 -- Supabase Dashboard → SQL Editor 에 붙여넣고 Run (한 번 실행)
 --
--- 저장 경로 규칙: verifications/{group_id}/{day}/{user_id}.webm
--- (클라이언트: lib/verifications.ts verificationObjectPath)
+-- 저장 경로 규칙: verifications/{group_id}/{day}/{user_id}.mp4 (webm fallback)
+-- (클라이언트: lib/verifications.ts verificationObjectPathForUpsert)
 
 -- ---------------------------------------------------------------------------
 -- 1) verifications
