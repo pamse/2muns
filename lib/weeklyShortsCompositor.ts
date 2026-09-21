@@ -219,6 +219,25 @@ function wallClockDelay(ms: number) {
   });
 }
 
+function sumChunkBytes(chunks: Blob[]): number {
+  return chunks.reduce((sum, c) => sum + c.size, 0);
+}
+
+/** iOS Safari: timeslice 자동 배출이 멈출 때 수동 플러시 */
+function flushMediaRecorder(
+  recorder: MediaRecorder,
+  logDebug?: (message: string) => void,
+  label?: string,
+): void {
+  if (recorder.state !== "recording") return;
+  try {
+    recorder.requestData();
+    logDebug?.(`requestData${label ? ` (${label})` : ""}`);
+  } catch {
+    // Safari 구버전
+  }
+}
+
 function videoSrcMatches(video: HTMLVideoElement, url: string): boolean {
   if (!video.src) return false;
   try {
@@ -778,13 +797,13 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     };
   });
 
-  let firstChunkLogged = false;
   recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) chunks.push(event.data);
-    if (!firstChunkLogged && event.data.size > 0) {
-      firstChunkLogged = true;
-      logDebug(`첫 recorder chunk ${Math.round(event.data.size / 1024)}KB`);
-    }
+    if (event.data.size <= 0) return;
+    chunks.push(event.data);
+    logDebug(
+      `recorder chunk #${chunks.length} ${Math.round(event.data.size / 1024)}KB ` +
+        `(누적 ${Math.round(sumChunkBytes(chunks) / 1024)}KB)`,
+    );
   };
 
   recorder.start(RECORDER_TIMESLICE_MS);
@@ -831,6 +850,11 @@ export async function renderWeeklyShortsHighlightVideo(input: {
         sharedPreviewVideo,
         logDebug,
       );
+      flushMediaRecorder(recorder, logDebug, `clip ${clipIndex + 1} DAY ${segment.day} end`);
+      await wallClockDelay(80);
+      logDebug(
+        `post-clip flush chunks=${chunks.length} sum=${Math.round(sumChunkBytes(chunks) / 1024)}KB`,
+      );
     }
 
     const tailOpts: FrameDrawOpts = {
@@ -857,35 +881,25 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       await delay(POST_RECORD_BUFFER_MS);
     }
 
-    const minChunksBeforeStop = Math.max(
-      10,
-      Math.ceil(expectedRecordMs / RECORDER_TIMESLICE_MS) - 1,
-    );
-    let chunkWaitRounds = 0;
-    while (
-      recorder.state === "recording" &&
-      chunks.length < minChunksBeforeStop &&
-      chunkWaitRounds < 25
-    ) {
-      chunkWaitRounds += 1;
-      try {
-        recorder.requestData();
-      } catch {
-        // Safari 구버전
-      }
-      await delay(RECORDER_TIMESLICE_MS);
+    for (let flushRound = 0; flushRound < 4; flushRound += 1) {
+      flushMediaRecorder(recorder, logDebug, `pre-stop ${flushRound + 1}/4`);
       commitCompositorFrame(ctx, canvasVideoStream, null, tailOpts);
-      logDebug(`chunk 대기 ${chunks.length}/${minChunksBeforeStop} (round ${chunkWaitRounds})`);
+      await wallClockDelay(150);
     }
+    logDebug(
+      `pre-stop flush 완료 chunks=${chunks.length} sum=${Math.round(sumChunkBytes(chunks) / 1024)}KB ` +
+        `(Safari는 1~3개 대형 chunk 정상)`,
+    );
   } finally {
     if (recorder.state === "recording") {
-      try {
-        recorder.requestData();
-      } catch {
-        // Safari 구버전
-      }
+      flushMediaRecorder(recorder, logDebug, "final");
+      await wallClockDelay(300);
+      flushMediaRecorder(recorder, logDebug, "final-2");
       await wallClockDelay(500);
-      logDebug(`recorder.stop() chunks=${chunks.length} wall=${Math.round(performance.now() - recordWallStart)}ms`);
+      logDebug(
+        `recorder.stop() chunks=${chunks.length} sum=${Math.round(sumChunkBytes(chunks) / 1024)}KB ` +
+          `wall=${Math.round(performance.now() - recordWallStart)}ms`,
+      );
       recorder.stop();
     }
     cleanupStreams();
