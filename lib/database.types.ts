@@ -128,6 +128,11 @@ export type Database = {
           nickname: string | null;
           avatar_url: string | null;
           created_at: string;
+          hearts_remaining: number;
+          hearts_purchased_count: number;
+          used_paid_heart: boolean;
+          expulsion_warning_at: string | null;
+          member_status: string;
         };
         Insert: {
           id?: string;
@@ -136,6 +141,11 @@ export type Database = {
           nickname?: string | null;
           avatar_url?: string | null;
           created_at?: string;
+          hearts_remaining?: number;
+          hearts_purchased_count?: number;
+          used_paid_heart?: boolean;
+          expulsion_warning_at?: string | null;
+          member_status?: string;
         };
         Update: {
           id?: string;
@@ -144,6 +154,11 @@ export type Database = {
           nickname?: string | null;
           avatar_url?: string | null;
           created_at?: string;
+          hearts_remaining?: number;
+          hearts_purchased_count?: number;
+          used_paid_heart?: boolean;
+          expulsion_warning_at?: string | null;
+          member_status?: string;
         };
         Relationships: [];
       };

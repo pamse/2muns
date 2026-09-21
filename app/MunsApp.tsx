@@ -1049,6 +1049,21 @@ export default function MunsApp() {
               onPointsToast={setToast}
               onPointsSnapshot={applyPointsSnapshot}
               onRefreshPoints={refreshPoints}
+              onHeartKicked={async (groupId) => {
+                const normalized = normalizeGroupId(groupId);
+                setJoinedGroupIds((prev) => {
+                  const next = prev.filter((id) => normalizeGroupId(id) !== normalized);
+                  if (userId) persistJoinedIds(userId, next);
+                  return next;
+                });
+                if (userId) removePersistedJoinedId(userId, groupId);
+                setRoom((current) =>
+                  current && normalizeGroupId(current.id) === normalized ? null : current,
+                );
+                setToast("유예 기간이 지나 모임에서 퇴장 처리되었습니다.");
+                await refreshGroups();
+                void refreshNotices(true);
+              }}
             />
           )}
         </main>

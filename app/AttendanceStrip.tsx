@@ -106,22 +106,43 @@ export function AttendanceStrip({
   totalDays,
   verifiedDays,
   livesLeft,
+  onLivesClick,
 }: {
   startedAt: string;
   totalDays: number;
   verifiedDays: ReadonlySet<number>;
   livesLeft: number;
+  onLivesClick?: () => void;
 }) {
   const days = buildAttendanceStrip({ startedAt, totalDays, verifiedDays });
   const lives = Math.max(0, livesLeft);
+  const livesChip = (
+    <>
+      남은 기회:{" "}
+      <span aria-label={`남은 기회 ${lives}회`}>
+        💚 {lives}
+        {onLivesClick ? <span className="text-[#00FF87]"> (+)</span> : null}
+      </span>
+    </>
+  );
 
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-sm font-bold text-white">출석 캘린더</h2>
-        <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
-          남은 기회: <span aria-label={`남은 기회 ${lives}회`}>💚 {lives}</span>
-        </span>
+        {onLivesClick ? (
+          <button
+            type="button"
+            onClick={onLivesClick}
+            className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition-colors hover:border-[#00FF87]/40"
+          >
+            {livesChip}
+          </button>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
+            {livesChip}
+          </span>
+        )}
       </div>
 
       <div className="no-scrollbar overflow-x-auto p-0.5">
