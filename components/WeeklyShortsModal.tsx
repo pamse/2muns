@@ -122,22 +122,28 @@ function ShortsPreview({
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black px-3 text-center">
-            <p className="text-[13px] font-bold text-white/90">DAY {clip.day}</p>
-            <p className="mt-1 text-[11px] text-white/55">인증 영상 없음</p>
-          </div>
+          <div className="absolute inset-0 bg-black" aria-hidden />
         )}
+        {!clip.videoUrl ? (
+          <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-[17px] font-extrabold tracking-wide text-white drop-shadow">
+            DAY {clip.day} / 66
+          </p>
+        ) : null}
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/70" />
         <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/45 px-1.5 py-0.5 backdrop-blur-sm">
           <Logo className="text-[11px] tracking-wide" />
         </div>
         <div className="pointer-events-none absolute inset-x-0 bottom-0 px-2.5 pb-2.5">
-          <p className="text-center text-[15px] font-extrabold tracking-wide text-white drop-shadow">
-            DAY {clip.day} / 66
-          </p>
-          <p className="mt-0.5 text-center text-[10px] font-medium text-white/80">
-            {clip.title}
-          </p>
+          {clip.videoUrl ? (
+            <>
+              <p className="text-center text-[15px] font-extrabold tracking-wide text-white drop-shadow">
+                DAY {clip.day} / 66
+              </p>
+              <p className="mt-0.5 text-center text-[10px] font-medium text-white/80">
+                {clip.title}
+              </p>
+            </>
+          ) : null}
           <div className="mt-2 flex gap-0.5">
             {clips.map((c, i) => (
               <span
