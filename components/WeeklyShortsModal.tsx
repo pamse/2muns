@@ -187,7 +187,12 @@ export function WeeklyShortsModal({
   const [loadingClips, setLoadingClips] = useState(false);
   const [clips, setClips] = useState<WeekShortClip[]>([]);
   const [renderProgress, setRenderProgress] = useState<string | null>(null);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const compositorMountRef = useRef<HTMLDivElement>(null);
+
+  const appendDebugLog = useCallback((line: string) => {
+    setDebugLogs((prev) => [...prev.slice(-19), line]);
+  }, []);
 
   const waitCompositorMount = useCallback(async () => {
     for (let i = 0; i < 8; i += 1) {
@@ -292,12 +297,16 @@ export function WeeklyShortsModal({
     { kind: "composited"; blob: Blob } | { kind: "fallback" }
   > {
     const mountEl = await waitCompositorMount();
+    appendDebugLog(
+      `[0] DOM mount ${mountEl ? `ok ${Math.round(mountEl.clientWidth)}x${Math.round(mountEl.clientHeight)}` : "missing"}`,
+    );
     const result = await renderWeeklyShortsHighlightVideo({
       segments: renderSegments,
       weekSlots,
       doubleSpeed,
       compositorMountEl: mountEl,
       onProgress: (message) => setRenderProgress(message),
+      onDebugLog: appendDebugLog,
     });
 
     if (result.mode === "canvas_buffer_too_small") {
@@ -305,11 +314,15 @@ export function WeeklyShortsModal({
         "[Compositor Fallback] Safari 캔버스 버퍼 부족 감지 -> 원본 MP4 다운로드로 자동 전환",
         { recordedBytes: result.recordedBytes },
       );
+      appendDebugLog(
+        `[!] Fallback 전환 (${Math.round(result.recordedBytes / 1024)}KB) -> 원본 MP4`,
+      );
       const originalUrl = pickFallbackVerificationUrl();
       if (!originalUrl) {
         throw new Error("원본 인증 영상을 찾을 수 없습니다.");
       }
       await downloadFallbackVerificationVideo(originalUrl, week);
+      appendDebugLog("[!] Fallback 원본 다운로드 요청 완료");
       return { kind: "fallback" };
     }
 
@@ -324,6 +337,7 @@ export function WeeklyShortsModal({
     }
 
     setActionError(null);
+    setDebugLogs([]);
     setDownloading(true);
     setRenderProgress("숏츠 영상 제작 중...");
     try {
@@ -340,6 +354,7 @@ export function WeeklyShortsModal({
         err instanceof Error ? err.message : "영상 저장에 실패했습니다.";
       logShortsModalSupabaseError("WeeklyShortsModal.download", { message });
       setSaveNotice(null);
+      appendDebugLog(`[ERR] ${message}`);
       window.alert(message);
       setActionError(message);
     } finally {
@@ -356,6 +371,7 @@ export function WeeklyShortsModal({
     }
 
     setActionError(null);
+    setDebugLogs([]);
     setSharing(true);
     setRenderProgress("숏츠 영상 제작 중...");
     try {
@@ -383,13 +399,17 @@ export function WeeklyShortsModal({
       }
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") {
-        setActionError(err.message || "공유에 실패했습니다.");
+        const message = err.message || "공유에 실패했습니다.";
+        appendDebugLog(`[ERR] ${message}`);
+        setActionError(message);
       }
     } finally {
       setSharing(false);
       setRenderProgress(null);
     }
   }
+
+  const visibleDebugLogs = debugLogs.slice(-5);
 
   if (!open) return null;
 
@@ -537,6 +557,20 @@ export function WeeklyShortsModal({
           </button>
         </div>
       </div>
+
+      {visibleDebugLogs.length > 0 ? (
+        <div
+          className="mt-3 rounded-lg border border-amber-500/25 bg-black/60 px-2.5 py-2 font-mono text-[9px] leading-relaxed text-amber-100/85"
+          aria-live="polite"
+          data-shorts-debug-log
+        >
+          {visibleDebugLogs.map((line, i) => (
+            <p key={`${i}-${line.slice(0, 48)}`} className="break-all">
+              {line}
+            </p>
+          ))}
+        </div>
+      ) : null}
 
       <p className="mt-3 text-center text-[11px] text-gray-500">
         저장 시 9:16 오버레이(2müns·DAY·프로그레스)가 합성된 주차 하이라이트 MP4가

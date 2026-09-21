@@ -489,6 +489,7 @@ async function playAndDrawClip(
   weekSlots: WeeklyShortsWeekSlot[],
   activeSlotIndex: number,
   doubleSpeed: boolean,
+  debugLog?: (message: string) => void,
 ): Promise<void> {
   const durationSec =
     Number.isFinite(video.duration) && video.duration > 0
@@ -514,6 +515,7 @@ async function playAndDrawClip(
 
   const wallStart = performance.now();
   let lastSeekTime = -1;
+  let drawFrameLogged = false;
 
   while (performance.now() - wallStart < wallMs) {
     const elapsed = performance.now() - wallStart;
@@ -534,6 +536,14 @@ async function playAndDrawClip(
       requestAnimationFrame(() => resolve());
     });
     commitCompositorFrame(ctx, canvasVideoStream, video, drawOpts);
+    if (!drawFrameLogged) {
+      drawFrameLogged = true;
+      const drawOk = video.readyState >= 2 && video.videoWidth > 0;
+      debugLog?.(
+        `클립 DAY ${segment.day} drawImage ${drawOk ? "성공" : "실패"} ` +
+          `(readyState=${video.readyState}, ${video.videoWidth}x${video.videoHeight}, t=${video.currentTime.toFixed(2)}s)`,
+      );
+    }
     await delay(FRAME_INTERVAL_MS);
   }
 }
@@ -546,8 +556,20 @@ async function playSegmentOnCanvas(
   weekSlots: WeeklyShortsWeekSlot[],
   activeSlotIndex: number,
   doubleSpeed: boolean,
+  clipIndex: number,
+  debugLog?: (message: string) => void,
 ): Promise<void> {
-  const video = await loadVideoElement(segment.videoUrl, segment.day);
+  let video: HTMLVideoElement;
+  try {
+    video = await loadVideoElement(segment.videoUrl, segment.day);
+    debugLog?.(
+      `클립 ${clipIndex + 1} (DAY ${segment.day}) 로드 성공 ${video.videoWidth}x${video.videoHeight}`,
+    );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "unknown";
+    debugLog?.(`클립 ${clipIndex + 1} (DAY ${segment.day}) 로드 실패: ${detail}`);
+    throw err;
+  }
   stage.attachVideo(video);
 
   try {
@@ -559,6 +581,7 @@ async function playSegmentOnCanvas(
       weekSlots,
       activeSlotIndex,
       doubleSpeed,
+      debugLog,
     );
   } finally {
     video.pause();
@@ -577,10 +600,19 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   weekSlots: WeeklyShortsWeekSlot[];
   doubleSpeed: boolean;
   onProgress?: (message: string) => void;
+  onDebugLog?: (line: string) => void;
   /** 모달 미리보기 영역 — Safari용 가시 캔버스 마운트 */
   compositorMountEl?: HTMLElement | null;
 }): Promise<WeeklyShortsHighlightResult> {
-  const { segments, weekSlots, doubleSpeed, onProgress, compositorMountEl } = input;
+  const { segments, weekSlots, doubleSpeed, onProgress, onDebugLog, compositorMountEl } =
+    input;
+  let debugStep = 0;
+  const logDebug = (message: string) => {
+    debugStep += 1;
+    const line = `[${debugStep}] ${message}`;
+    console.info("[WeeklyShortsCompositor]", line);
+    onDebugLog?.(line);
+  };
   if (segments.length === 0) {
     throw new Error("합성할 인증 영상이 없습니다.");
   }
@@ -596,6 +628,11 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   if (!ctx) {
     throw new Error("Canvas를 초기화하지 못했습니다.");
   }
+
+  logDebug(
+    `캔버스 초기화 완료: ${canvas.width}x${canvas.height} ` +
+      `(pureVideo=${canvasSize.pureVideoCapture}, mount=${Boolean(compositorMountEl)})`,
+  );
 
   const stage = createCompositorStage(canvas, compositorMountEl);
 
@@ -623,11 +660,18 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   let recorder: MediaRecorder;
   try {
     recorder = new MediaRecorder(recorderStream, recorderOptions);
-  } catch {
+    logDebug(`MediaRecorder 생성 성공 mimeType=${mimeType}`);
+  } catch (recErr) {
+    logDebug(
+      `MediaRecorder 1차 생성 실패, video-only 재시도: ${
+        recErr instanceof Error ? recErr.message : "unknown"
+      }`,
+    );
     recorder = new MediaRecorder(recorderStream, {
       mimeType,
       videoBitsPerSecond: canvasSize.videoBitsPerSecond,
     });
+    logDebug(`MediaRecorder fallback 생성 mimeType=${mimeType}`);
   }
 
   const recorded = new Promise<Blob>((resolve, reject) => {
@@ -635,14 +679,25 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       const type = mimeType.split(";")[0] || "video/webm";
       resolve(new Blob(chunks, { type }));
     };
-    recorder.onerror = () => reject(new Error("숏츠 녹화 중 오류가 발생했습니다."));
+    recorder.onerror = () => {
+      logDebug("MediaRecorder onerror 발생");
+      reject(new Error("숏츠 녹화 중 오류가 발생했습니다."));
+    };
   });
 
+  let firstChunkLogged = false;
   recorder.ondataavailable = (event) => {
     if (event.data.size > 0) chunks.push(event.data);
+    if (!firstChunkLogged && event.data.size > 0) {
+      firstChunkLogged = true;
+      logDebug(`첫 recorder chunk ${Math.round(event.data.size / 1024)}KB`);
+    }
   };
 
   recorder.start(RECORDER_TIMESLICE_MS);
+  logDebug(
+    `MediaRecorder state=${recorder.state} timeslice=${RECORDER_TIMESLICE_MS}ms bps=${canvasSize.videoBitsPerSecond}`,
+  );
   onProgress?.("숏츠 영상 제작 중...");
 
   const warmupOpts: FrameDrawOpts = {
@@ -660,7 +715,8 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   }
 
   try {
-    for (const segment of segments) {
+    for (let clipIndex = 0; clipIndex < segments.length; clipIndex += 1) {
+      const segment = segments[clipIndex]!;
       const activeSlotIndex = Math.max(
         0,
         weekSlots.findIndex((s) => s.day === segment.day),
@@ -674,6 +730,8 @@ export async function renderWeeklyShortsHighlightVideo(input: {
         weekSlots,
         activeSlotIndex,
         doubleSpeed,
+        clipIndex,
+        logDebug,
       );
     }
 
@@ -699,10 +757,17 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   }
 
   const raw = await recorded;
+  const chunkBytes = chunks.reduce((sum, c) => sum + c.size, 0);
+  logDebug(
+    `생성된 Blob 크기: ${Math.round(raw.size / 1024)}KB (chunks=${chunks.length}, ` +
+      `chunkSum=${Math.round(chunkBytes / 1024)}KB, min=${Math.round(MIN_HIGHLIGHT_BYTES / 1024)}KB)`,
+  );
 
   if (raw.size < MIN_HIGHLIGHT_BYTES) {
+    logDebug("버퍼 부족 — Fallback 기준 미달");
     return { mode: "canvas_buffer_too_small", recordedBytes: raw.size };
   }
 
+  logDebug("합성 성공 — Blob 다운로드 준비");
   return { mode: "composited", blob: wrapBlobAsMp4Download(raw) };
 }
