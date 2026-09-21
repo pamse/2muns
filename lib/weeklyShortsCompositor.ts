@@ -453,7 +453,11 @@ function loadVideoElement(url: string, day: number): Promise<HTMLVideoElement> {
   );
 }
 
-async function seekVideoTo(video: HTMLVideoElement, timeSec: number): Promise<void> {
+async function seekVideoTo(
+  video: HTMLVideoElement,
+  timeSec: number,
+  timeoutMs = 900,
+): Promise<void> {
   const target = Math.max(0, timeSec);
   if (Math.abs(video.currentTime - target) < 0.025) return;
 
@@ -464,7 +468,7 @@ async function seekVideoTo(video: HTMLVideoElement, timeSec: number): Promise<vo
       if (timer) window.clearTimeout(timer);
       resolve();
     };
-    timer = window.setTimeout(finish, 900);
+    timer = window.setTimeout(finish, timeoutMs);
     video.addEventListener("seeked", finish, { once: true });
     try {
       video.currentTime = target;
@@ -479,7 +483,8 @@ function clipWallDurationMs(doubleSpeed: boolean): number {
 }
 
 /**
- * 클립당 wall-clock 최소 시간을 보장하며 캔버스에 그림 (Safari 조기 종료 방지).
+ * 클립당 고정 프레임 수(30fps × 3초)로 wall-clock·타임라인을 보장.
+ * iOS Safari는 currentTime이 0에 고정되므로 프레임마다 수동 seek.
  */
 async function playAndDrawClip(
   ctx: CanvasRenderingContext2D,
@@ -491,19 +496,37 @@ async function playAndDrawClip(
   doubleSpeed: boolean,
   debugLog?: (message: string) => void,
 ): Promise<void> {
-  const durationSec =
+  const scrubSpanSec =
     Number.isFinite(video.duration) && video.duration > 0
       ? Math.min(video.duration, 15)
       : SEGMENT_FALLBACK_SEC;
 
-  video.playbackRate = doubleSpeed ? 2 : 1;
-  const wallMs = clipWallDurationMs(doubleSpeed);
+  const clipWallSec = clipWallDurationMs(doubleSpeed) / 1000;
+  const totalFrames = Math.max(1, Math.round(clipWallSec * RECORD_FPS));
+  const seekTimeoutMs = isIosWebKit() ? 50 : 120;
 
-  await seekVideoTo(video, 0);
+  video.playbackRate = doubleSpeed ? 2 : 1;
+  video.muted = true;
+
+  await seekVideoTo(video, 0, seekTimeoutMs);
+
+  let manualTimeline = isIosWebKit();
   try {
     await video.play();
   } catch {
-    // 재생 차단 시 seek + wall-clock 루프로 대체
+    manualTimeline = true;
+    debugLog?.(`클립 DAY ${segment.day} autoplay 차단 → 수동 seek 타임라인`);
+  }
+
+  if (!manualTimeline) {
+    const probeT = video.currentTime;
+    await delay(120);
+    if (video.paused || video.currentTime < probeT + 0.04) {
+      manualTimeline = true;
+      debugLog?.(
+        `클립 DAY ${segment.day} 재생 정지 감지 (t=${video.currentTime.toFixed(2)}s) → 수동 seek`,
+      );
+    }
   }
 
   const drawOpts: FrameDrawOpts = {
@@ -513,39 +536,51 @@ async function playAndDrawClip(
     activeSlotIndex,
   };
 
-  const wallStart = performance.now();
-  let lastSeekTime = -1;
-  let drawFrameLogged = false;
+  const sampleFrameIndexes = new Set([
+    0,
+    Math.floor(totalFrames * 0.25),
+    Math.floor(totalFrames * 0.5),
+    totalFrames - 1,
+  ]);
 
-  while (performance.now() - wallStart < wallMs) {
-    const elapsed = performance.now() - wallStart;
-    const progress = Math.min(1, elapsed / wallMs);
+  const clipWallStart = performance.now();
+
+  for (let frameIndex = 0; frameIndex < totalFrames; frameIndex += 1) {
+    const mediaProgress = (frameIndex + 1) / totalFrames;
     const targetMediaTime = Math.min(
-      progress * durationSec,
-      Math.max(0, durationSec - 0.05),
+      mediaProgress * scrubSpanSec,
+      Math.max(0, scrubSpanSec - 0.04),
     );
 
-    if (video.paused || video.currentTime < targetMediaTime - 0.12) {
-      if (Math.abs(lastSeekTime - targetMediaTime) > 0.03) {
-        await seekVideoTo(video, targetMediaTime);
-        lastSeekTime = targetMediaTime;
-      }
+    const stuckAtZero =
+      frameIndex > 2 && video.currentTime < 0.05 && targetMediaTime > 0.2;
+    if (manualTimeline || video.paused || stuckAtZero || frameIndex === 0) {
+      await seekVideoTo(video, targetMediaTime, seekTimeoutMs);
+    } else if (video.currentTime < targetMediaTime - 0.12) {
+      await seekVideoTo(video, targetMediaTime, seekTimeoutMs);
     }
 
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => resolve());
     });
     commitCompositorFrame(ctx, canvasVideoStream, video, drawOpts);
-    if (!drawFrameLogged) {
-      drawFrameLogged = true;
+
+    if (sampleFrameIndexes.has(frameIndex)) {
       const drawOk = video.readyState >= 2 && video.videoWidth > 0;
       debugLog?.(
-        `클립 DAY ${segment.day} drawImage ${drawOk ? "성공" : "실패"} ` +
-          `(readyState=${video.readyState}, ${video.videoWidth}x${video.videoHeight}, t=${video.currentTime.toFixed(2)}s)`,
+        `클립 DAY ${segment.day} f${frameIndex + 1}/${totalFrames} drawImage ${drawOk ? "성공" : "실패"} ` +
+          `t=${video.currentTime.toFixed(2)}s target=${targetMediaTime.toFixed(2)}s manual=${manualTimeline}`,
       );
     }
+
     await delay(FRAME_INTERVAL_MS);
   }
+
+  const clipWallElapsed = performance.now() - clipWallStart;
+  debugLog?.(
+    `클립 DAY ${segment.day} wall-clock ${Math.round(clipWallElapsed)}ms / ${Math.round(clipWallSec * 1000)}ms, ` +
+      `frames=${totalFrames}, end t=${video.currentTime.toFixed(2)}s`,
+  );
 }
 
 async function playSegmentOnCanvas(
@@ -695,8 +730,12 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   };
 
   recorder.start(RECORDER_TIMESLICE_MS);
+  const recordWallStart = performance.now();
+  const expectedRecordMs =
+    segments.length * clipWallDurationMs(doubleSpeed) + POST_RECORD_BUFFER_MS;
   logDebug(
-    `MediaRecorder state=${recorder.state} timeslice=${RECORDER_TIMESLICE_MS}ms bps=${canvasSize.videoBitsPerSecond}`,
+    `MediaRecorder state=${recorder.state} timeslice=${RECORDER_TIMESLICE_MS}ms bps=${canvasSize.videoBitsPerSecond} ` +
+      `expectedWall≈${Math.round(expectedRecordMs / 1000)}s`,
   );
   onProgress?.("숏츠 영상 제작 중...");
 
@@ -735,13 +774,50 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       );
     }
 
-    commitCompositorFrame(ctx, canvasVideoStream, null, {
+    const tailOpts: FrameDrawOpts = {
       day: segments[segments.length - 1]?.day ?? 1,
       title: segments[segments.length - 1]?.title ?? "",
       weekSlots,
       activeSlotIndex: weekSlots.length - 1,
-    });
-    await delay(POST_RECORD_BUFFER_MS);
+    };
+
+    const recordElapsed = performance.now() - recordWallStart;
+    if (recordElapsed < expectedRecordMs) {
+      const padMs = expectedRecordMs - recordElapsed;
+      logDebug(`녹화 wall-clock 패딩 ${Math.round(padMs)}ms (chunks=${chunks.length})`);
+      const padUntil = performance.now() + padMs;
+      while (performance.now() < padUntil) {
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+        commitCompositorFrame(ctx, canvasVideoStream, null, tailOpts);
+        await delay(FRAME_INTERVAL_MS);
+      }
+    } else {
+      commitCompositorFrame(ctx, canvasVideoStream, null, tailOpts);
+      await delay(POST_RECORD_BUFFER_MS);
+    }
+
+    const minChunksBeforeStop = Math.max(
+      10,
+      Math.ceil(expectedRecordMs / RECORDER_TIMESLICE_MS) - 1,
+    );
+    let chunkWaitRounds = 0;
+    while (
+      recorder.state === "recording" &&
+      chunks.length < minChunksBeforeStop &&
+      chunkWaitRounds < 25
+    ) {
+      chunkWaitRounds += 1;
+      try {
+        recorder.requestData();
+      } catch {
+        // Safari 구버전
+      }
+      await delay(RECORDER_TIMESLICE_MS);
+      commitCompositorFrame(ctx, canvasVideoStream, null, tailOpts);
+      logDebug(`chunk 대기 ${chunks.length}/${minChunksBeforeStop} (round ${chunkWaitRounds})`);
+    }
   } finally {
     if (recorder.state === "recording") {
       try {
@@ -750,6 +826,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
         // Safari 구버전
       }
       await delay(150);
+      logDebug(`recorder.stop() chunks=${chunks.length} wall=${Math.round(performance.now() - recordWallStart)}ms`);
       recorder.stop();
     }
     cleanupStreams();
