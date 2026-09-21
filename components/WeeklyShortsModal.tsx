@@ -10,6 +10,7 @@ import {
   verificationVideoUrl,
 } from "@/lib/verifications";
 import {
+  downloadFallbackVerificationVideo,
   triggerMp4FileDownload,
   videoSourceTypeForUrl,
   weekHighlightDownloadFilename,
@@ -180,7 +181,7 @@ export function WeeklyShortsModal({
   const [doubleSpeed, setDoubleSpeed] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saveNotice, setSaveNotice] = useState<"highlight" | "fallback" | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadingClips, setLoadingClips] = useState(false);
@@ -222,7 +223,7 @@ export function WeeklyShortsModal({
 
   useEffect(() => {
     if (!open) {
-      setSaved(false);
+      setSaveNotice(null);
       setActionError(null);
       return;
     }
@@ -280,15 +281,39 @@ export function WeeklyShortsModal({
     };
   }, [open, groupId, userId, week]);
 
-  async function buildHighlightBlob() {
+  function pickFallbackVerificationUrl(): string | null {
+    const last = renderSegments[renderSegments.length - 1];
+    if (last?.videoUrl) return last.videoUrl;
+    const first = renderSegments[0];
+    return first?.videoUrl ?? null;
+  }
+
+  async function composeHighlightOrFallback(): Promise<
+    { kind: "composited"; blob: Blob } | { kind: "fallback" }
+  > {
     const mountEl = await waitCompositorMount();
-    return renderWeeklyShortsHighlightVideo({
+    const result = await renderWeeklyShortsHighlightVideo({
       segments: renderSegments,
       weekSlots,
       doubleSpeed,
       compositorMountEl: mountEl,
       onProgress: (message) => setRenderProgress(message),
     });
+
+    if (result.mode === "canvas_buffer_too_small") {
+      console.warn(
+        "[Compositor Fallback] Safari 캔버스 버퍼 부족 감지 -> 원본 MP4 다운로드로 자동 전환",
+        { recordedBytes: result.recordedBytes },
+      );
+      const originalUrl = pickFallbackVerificationUrl();
+      if (!originalUrl) {
+        throw new Error("원본 인증 영상을 찾을 수 없습니다.");
+      }
+      await downloadFallbackVerificationVideo(originalUrl, week);
+      return { kind: "fallback" };
+    }
+
+    return { kind: "composited", blob: result.blob };
   }
 
   async function handleDownload() {
@@ -302,15 +327,19 @@ export function WeeklyShortsModal({
     setDownloading(true);
     setRenderProgress("숏츠 영상 제작 중...");
     try {
-      const mp4Blob = await buildHighlightBlob();
-      triggerMp4FileDownload(mp4Blob, weekHighlightDownloadFilename(week));
-      setSaved(true);
+      const outcome = await composeHighlightOrFallback();
+      if (outcome.kind === "composited") {
+        triggerMp4FileDownload(outcome.blob, weekHighlightDownloadFilename(week));
+        setSaveNotice("highlight");
+      } else {
+        setSaveNotice("fallback");
+      }
     } catch (err) {
       console.error("Download error:", err);
       const message =
         err instanceof Error ? err.message : "영상 저장에 실패했습니다.";
       logShortsModalSupabaseError("WeeklyShortsModal.download", { message });
-      setSaved(false);
+      setSaveNotice(null);
       window.alert(message);
       setActionError(message);
     } finally {
@@ -330,8 +359,12 @@ export function WeeklyShortsModal({
     setSharing(true);
     setRenderProgress("숏츠 영상 제작 중...");
     try {
-      const mp4Blob = await buildHighlightBlob();
-      const file = new File([mp4Blob], weekHighlightDownloadFilename(week), {
+      const outcome = await composeHighlightOrFallback();
+      if (outcome.kind === "fallback") {
+        setSaveNotice("fallback");
+        return;
+      }
+      const file = new File([outcome.blob], weekHighlightDownloadFilename(week), {
         type: "video/mp4",
       });
       const nav = navigator as Navigator & {
@@ -343,9 +376,10 @@ export function WeeklyShortsModal({
           title: `2müns ${week}주 차 숏츠`,
           text: "이번 주 인증 하이라이트",
         });
-        setSaved(true);
+        setSaveNotice("highlight");
       } else {
-        await handleDownload();
+        triggerMp4FileDownload(outcome.blob, weekHighlightDownloadFilename(week));
+        setSaveNotice("highlight");
       }
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") {
@@ -392,14 +426,22 @@ export function WeeklyShortsModal({
           {renderProgress}
         </p>
       ) : null}
-      {saved && (
+      {saveNotice === "highlight" ? (
         <p
           role="status"
           className="mb-4 rounded-xl border border-[#00FF87]/30 bg-[#00FF87]/10 px-3 py-2.5 text-[13px] font-medium leading-relaxed text-white"
         >
           기기에 성공적으로 저장되었습니다! 인스타 릴스나 유튜브 숏츠에 올려보세요.
         </p>
-      )}
+      ) : null}
+      {saveNotice === "fallback" ? (
+        <p
+          role="status"
+          className="mb-4 rounded-xl border border-sky-500/35 bg-sky-500/10 px-3 py-2.5 text-[13px] font-medium leading-relaxed text-sky-100"
+        >
+          모바일 Safari 환경에 맞춰 고화질 인증 MP4 영상으로 저장되었습니다.
+        </p>
+      ) : null}
 
       <div className="relative mx-auto w-[168px]">
         {loadingClips ? (

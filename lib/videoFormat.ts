@@ -68,6 +68,25 @@ export function weekHighlightDownloadFilename(week: number): string {
   return `2muns_week${Math.max(1, Math.floor(week))}_highlight.mp4`;
 }
 
+export function weekVerificationDownloadFilename(week: number): string {
+  return `2muns_week${Math.max(1, Math.floor(week))}_verification.mp4`;
+}
+
+/** Safari 캔버스 합성 실패 시 Storage 원본 MP4 저장 (비용 0원 Fallback) */
+export async function downloadFallbackVerificationVideo(
+  originalUrl: string,
+  weekNumber: number,
+): Promise<void> {
+  const filename = weekVerificationDownloadFilename(weekNumber);
+  try {
+    const blob = await fetchVideoBlobForDownload(originalUrl);
+    triggerMp4FileDownload(blob, filename);
+  } catch (err) {
+    console.warn("[Compositor Fallback] 원본 fetch/다운로드 실패, URL 새 창으로 열기", err);
+    window.open(originalUrl, "_blank", "noopener,noreferrer");
+  }
+}
+
 export async function fetchVideoBlobForDownload(videoUrl: string): Promise<Blob> {
   const res = await fetch(videoUrl, { mode: "cors" });
   if (!res.ok) {

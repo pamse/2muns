@@ -503,6 +503,10 @@ async function playSegmentOnCanvas(
   }
 }
 
+export type WeeklyShortsHighlightResult =
+  | { mode: "composited"; blob: Blob }
+  | { mode: "canvas_buffer_too_small"; recordedBytes: number };
+
 export async function renderWeeklyShortsHighlightVideo(input: {
   segments: WeeklyShortsRenderClip[];
   weekSlots: WeeklyShortsWeekSlot[];
@@ -510,7 +514,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   onProgress?: (message: string) => void;
   /** 모달 미리보기 영역 — Safari용 가시 캔버스 마운트 */
   compositorMountEl?: HTMLElement | null;
-}): Promise<Blob> {
+}): Promise<WeeklyShortsHighlightResult> {
   const { segments, weekSlots, doubleSpeed, onProgress, compositorMountEl } = input;
   if (segments.length === 0) {
     throw new Error("합성할 인증 영상이 없습니다.");
@@ -626,15 +630,10 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   }
 
   const raw = await recorded;
-  const expectedMinMs =
-    segments.length * clipWallDurationMs(doubleSpeed) + POST_RECORD_BUFFER_MS;
 
   if (raw.size < MIN_HIGHLIGHT_BYTES) {
-    throw new Error(
-      `합성된 영상 용량이 너무 작습니다(${Math.round(raw.size / 1024)}KB). ` +
-        `약 ${Math.round(expectedMinMs / 1000)}초 분량이 필요합니다. Wi-Fi에서 다시 시도해 주세요.`,
-    );
+    return { mode: "canvas_buffer_too_small", recordedBytes: raw.size };
   }
 
-  return wrapBlobAsMp4Download(raw);
+  return { mode: "composited", blob: wrapBlobAsMp4Download(raw) };
 }
