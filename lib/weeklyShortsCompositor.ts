@@ -5,16 +5,51 @@ import {
 
 export const SHORTS_CANVAS_WIDTH = 1080;
 export const SHORTS_CANVAS_HEIGHT = 1920;
+export const SHORTS_CANVAS_WIDTH_MOBILE = 720;
+export const SHORTS_CANVAS_HEIGHT_MOBILE = 1280;
 
 const SEGMENT_FALLBACK_SEC = 3;
 const CLIP_WALL_MS = 3000;
 const CLIP_WALL_MS_FAST = 1500;
 const RECORD_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / RECORD_FPS;
-const MIN_HIGHLIGHT_BYTES = 500_000;
+/** 720p·15초 합성 성공 기준 (Fallback은 이보다 작을 때만) */
+const MIN_HIGHLIGHT_BYTES = 200_000;
 const POST_RECORD_BUFFER_MS = 500;
 const RECORDER_VIDEO_BPS = 3_000_000;
-const RECORDER_TIMESLICE_MS = 500;
+const RECORDER_VIDEO_BPS_MOBILE = 2_500_000;
+const RECORDER_TIMESLICE_MS = 1000;
+
+function isIosWebKit(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  const iosDevice =
+    /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return iosDevice;
+}
+
+function isMobileCompositorEnvironment(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  if (isIosWebKit()) return true;
+  return /Android/i.test(ua) && /Mobile/i.test(ua);
+}
+
+export function resolveShortsCanvasSize(): {
+  width: number;
+  height: number;
+  pureVideoCapture: boolean;
+  videoBitsPerSecond: number;
+} {
+  const mobile = isMobileCompositorEnvironment();
+  return {
+    width: mobile ? SHORTS_CANVAS_WIDTH_MOBILE : SHORTS_CANVAS_WIDTH,
+    height: mobile ? SHORTS_CANVAS_HEIGHT_MOBILE : SHORTS_CANVAS_HEIGHT,
+    pureVideoCapture: isIosWebKit(),
+    videoBitsPerSecond: mobile ? RECORDER_VIDEO_BPS_MOBILE : RECORDER_VIDEO_BPS,
+  };
+}
 
 let safariCanvasPulse = false;
 
@@ -80,15 +115,16 @@ export function drawWeeklyShortsFrame(
     activeSlotIndex: number;
   },
 ) {
-  const W = SHORTS_CANVAS_WIDTH;
-  const H = SHORTS_CANVAS_HEIGHT;
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
+  const s = W / SHORTS_CANVAS_WIDTH;
 
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
 
   if (video && video.readyState >= 2 && video.videoWidth > 0) {
     ctx.save();
-    ctx.filter = "blur(32px) brightness(0.35)";
+    ctx.filter = `blur(${Math.round(32 * s)}px) brightness(0.35)`;
     drawCoverVideo(ctx, video, 0, 0, W, H);
     ctx.restore();
     drawCoverVideo(ctx, video, 0, 0, W, H);
@@ -102,44 +138,44 @@ export function drawWeeklyShortsFrame(
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
 
-  const badgeX = 48;
-  const badgeY = 72;
-  const badgeW = 220;
-  const badgeH = 58;
-  roundRectPath(ctx, badgeX, badgeY, badgeW, badgeH, 14);
+  const badgeX = 48 * s;
+  const badgeY = 72 * s;
+  const badgeW = 220 * s;
+  const badgeH = 58 * s;
+  roundRectPath(ctx, badgeX, badgeY, badgeW, badgeH, 14 * s);
   ctx.fillStyle = "rgba(0,0,0,0.45)";
   ctx.fill();
-  ctx.font = "bold 34px system-ui, -apple-system, sans-serif";
+  ctx.font = `bold ${Math.round(34 * s)}px system-ui, -apple-system, sans-serif`;
   ctx.fillStyle = "#00FF87";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText("2müns", badgeX + 22, badgeY + badgeH / 2);
+  ctx.fillText("2müns", badgeX + 22 * s, badgeY + badgeH / 2);
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  ctx.font = "800 56px system-ui, -apple-system, sans-serif";
+  ctx.font = `800 ${Math.round(56 * s)}px system-ui, -apple-system, sans-serif`;
   ctx.fillStyle = "#ffffff";
   ctx.shadowColor = "rgba(0,0,0,0.85)";
-  ctx.shadowBlur = 12;
-  ctx.fillText(`DAY ${opts.day} / 66`, W / 2, H - 200);
+  ctx.shadowBlur = 12 * s;
+  ctx.fillText(`DAY ${opts.day} / 66`, W / 2, H - 200 * s);
   ctx.shadowBlur = 0;
 
-  ctx.font = "500 34px system-ui, -apple-system, sans-serif";
+  ctx.font = `500 ${Math.round(34 * s)}px system-ui, -apple-system, sans-serif`;
   ctx.fillStyle = "rgba(255,255,255,0.82)";
   const caption = opts.title.trim().slice(0, 20) || `DAY ${opts.day}`;
-  ctx.fillText(caption, W / 2, H - 132);
+  ctx.fillText(caption, W / 2, H - 132 * s);
 
   const barCount = opts.weekSlots.length;
-  const gap = 10;
-  const padX = 48;
-  const barH = 8;
-  const barY = H - 72;
+  const gap = 10 * s;
+  const padX = 48 * s;
+  const barH = 8 * s;
+  const barY = H - 72 * s;
   const barW =
     barCount > 0 ? (W - padX * 2 - gap * (barCount - 1)) / barCount : 0;
 
   opts.weekSlots.forEach((slot, i) => {
     const x = padX + i * (barW + gap);
-    roundRectPath(ctx, x, barY, barW, barH, 4);
+    roundRectPath(ctx, x, barY, barW, barH, 4 * s);
     if (i === opts.activeSlotIndex) {
       ctx.fillStyle = "#00FF87";
     } else if (slot.hasVideo) {
@@ -236,8 +272,8 @@ function createCompositorStage(
     root.style.cssText =
       "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.99;pointer-events:none;z-index:9999;overflow:hidden;background:#000";
     canvas.style.display = "block";
-    canvas.style.width = `${SHORTS_CANVAS_WIDTH}px`;
-    canvas.style.height = `${SHORTS_CANVAS_HEIGHT}px`;
+    canvas.style.width = `${canvas.width}px`;
+    canvas.style.height = `${canvas.height}px`;
     root.appendChild(canvas);
     document.body.appendChild(root);
   }
@@ -271,18 +307,45 @@ function createCompositorStage(
   };
 }
 
-/** iOS Safari: canvas-only MediaRecorder 조기 종료 방지 */
-function createCanvasPlusSilentAudioStream(canvas: HTMLCanvasElement): {
-  combinedStream: MediaStream;
+type CompositorMediaStreams = {
+  recorderStream: MediaStream;
   canvasVideoStream: MediaStream;
   resumeAudio: () => Promise<void>;
   cleanup: () => void;
-} {
+};
+
+/** iOS Safari: 순수 canvas.captureStream만 사용 (무음 오디오 병합 시 A/V 락 방지) */
+function createCompositorMediaStreams(
+  canvas: HTMLCanvasElement,
+  pureVideoOnly: boolean,
+): CompositorMediaStreams {
+  const canvasVideoStream = canvas.captureStream(RECORD_FPS);
+
+  if (pureVideoOnly) {
+    const cleanup = () => {
+      canvasVideoStream.getTracks().forEach((t) => t.stop());
+    };
+    return {
+      recorderStream: canvasVideoStream,
+      canvasVideoStream,
+      resumeAudio: async () => {},
+      cleanup,
+    };
+  }
+
   const AudioCtx =
     window.AudioContext ||
     (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioCtx) {
-    throw new Error("AudioContext를 사용할 수 없습니다.");
+    const cleanup = () => {
+      canvasVideoStream.getTracks().forEach((t) => t.stop());
+    };
+    return {
+      recorderStream: canvasVideoStream,
+      canvasVideoStream,
+      resumeAudio: async () => {},
+      cleanup,
+    };
   }
 
   const audioCtx = new AudioCtx();
@@ -294,8 +357,7 @@ function createCanvasPlusSilentAudioStream(canvas: HTMLCanvasElement): {
   gain.connect(silentDest);
   oscillator.start(0);
 
-  const canvasVideoStream = canvas.captureStream(RECORD_FPS);
-  const combinedStream = new MediaStream([
+  const recorderStream = new MediaStream([
     ...canvasVideoStream.getVideoTracks(),
     ...silentDest.stream.getAudioTracks(),
   ]);
@@ -309,11 +371,11 @@ function createCanvasPlusSilentAudioStream(canvas: HTMLCanvasElement): {
     void audioCtx.close().catch(() => {});
     canvasVideoStream.getTracks().forEach((t) => t.stop());
     silentDest.stream.getTracks().forEach((t) => t.stop());
-    combinedStream.getTracks().forEach((t) => t.stop());
+    recorderStream.getTracks().forEach((t) => t.stop());
   };
 
   return {
-    combinedStream,
+    recorderStream,
     canvasVideoStream,
     resumeAudio: () => audioCtx.resume(),
     cleanup,
@@ -468,6 +530,9 @@ async function playAndDrawClip(
       }
     }
 
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
     commitCompositorFrame(ctx, canvasVideoStream, video, drawOpts);
     await delay(FRAME_INTERVAL_MS);
   }
@@ -523,9 +588,10 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     throw new Error("이 브라우저에서는 숏츠 영상 합성을 지원하지 않습니다.");
   }
 
+  const canvasSize = resolveShortsCanvasSize();
   const canvas = document.createElement("canvas");
-  canvas.width = SHORTS_CANVAS_WIDTH;
-  canvas.height = SHORTS_CANVAS_HEIGHT;
+  canvas.width = canvasSize.width;
+  canvas.height = canvasSize.height;
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     throw new Error("Canvas를 초기화하지 못했습니다.");
@@ -539,28 +605,28 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   }
 
   const {
-    combinedStream,
+    recorderStream,
     canvasVideoStream,
     resumeAudio,
     cleanup: cleanupStreams,
-  } = createCanvasPlusSilentAudioStream(canvas);
+  } = createCompositorMediaStreams(canvas, canvasSize.pureVideoCapture);
 
   await resumeAudio();
 
   const recorderOptions: MediaRecorderOptions = {
     mimeType,
-    videoBitsPerSecond: RECORDER_VIDEO_BPS,
-    audioBitsPerSecond: 128_000,
+    videoBitsPerSecond: canvasSize.videoBitsPerSecond,
+    ...(canvasSize.pureVideoCapture ? {} : { audioBitsPerSecond: 128_000 }),
   };
 
   const chunks: Blob[] = [];
   let recorder: MediaRecorder;
   try {
-    recorder = new MediaRecorder(combinedStream, recorderOptions);
+    recorder = new MediaRecorder(recorderStream, recorderOptions);
   } catch {
-    recorder = new MediaRecorder(combinedStream, {
+    recorder = new MediaRecorder(recorderStream, {
       mimeType,
-      videoBitsPerSecond: RECORDER_VIDEO_BPS,
+      videoBitsPerSecond: canvasSize.videoBitsPerSecond,
     });
   }
 
@@ -586,6 +652,9 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     activeSlotIndex: 0,
   };
   for (let i = 0; i < 10; i += 1) {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
     commitCompositorFrame(ctx, canvasVideoStream, null, warmupOpts);
     await delay(FRAME_INTERVAL_MS);
   }
