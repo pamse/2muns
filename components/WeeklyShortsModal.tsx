@@ -1,7 +1,7 @@
 /** 주차 숏츠 — verifications + Storage 실영상 전용 (더미/Unsplash 없음) */
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { BottomSheet, Logo } from "@/app/ui";
 import {
@@ -186,6 +186,17 @@ export function WeeklyShortsModal({
   const [loadingClips, setLoadingClips] = useState(false);
   const [clips, setClips] = useState<WeekShortClip[]>([]);
   const [renderProgress, setRenderProgress] = useState<string | null>(null);
+  const compositorMountRef = useRef<HTMLDivElement>(null);
+
+  const waitCompositorMount = useCallback(async () => {
+    for (let i = 0; i < 8; i += 1) {
+      if (compositorMountRef.current) return compositorMountRef.current;
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    }
+    return compositorMountRef.current;
+  }, []);
 
   const verifiedCount = useMemo(
     () => clips.filter((c) => c.videoUrl).length,
@@ -270,10 +281,12 @@ export function WeeklyShortsModal({
   }, [open, groupId, userId, week]);
 
   async function buildHighlightBlob() {
+    const mountEl = await waitCompositorMount();
     return renderWeeklyShortsHighlightVideo({
       segments: renderSegments,
       weekSlots,
       doubleSpeed,
+      compositorMountEl: mountEl,
       onProgress: (message) => setRenderProgress(message),
     });
   }
@@ -388,17 +401,36 @@ export function WeeklyShortsModal({
         </p>
       )}
 
-      {loadingClips ? (
-        <div className="flex justify-center py-12">
-          <Loader2 size={28} className="animate-spin text-zinc-400" />
-        </div>
-      ) : (
-        <ShortsPreview
-          key={doubleSpeed ? "x2" : "x1"}
-          clips={clips}
-          doubleSpeed={doubleSpeed}
-        />
-      )}
+      <div className="relative mx-auto w-[168px]">
+        {loadingClips ? (
+          <div className="flex justify-center py-12">
+            <Loader2 size={28} className="animate-spin text-zinc-400" />
+          </div>
+        ) : null}
+
+        {!loadingClips && !downloading && !sharing ? (
+          <ShortsPreview
+            key={doubleSpeed ? "x2" : "x1"}
+            clips={clips}
+            doubleSpeed={doubleSpeed}
+          />
+        ) : null}
+
+        {downloading || sharing ? (
+          <div
+            className="relative overflow-hidden rounded-[22px] border border-[#00FF87]/40 bg-black shadow-[0_0_28px_#00FF8728]"
+            aria-busy="true"
+          >
+            <div ref={compositorMountRef} className="relative aspect-[9/16] w-full" />
+            <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-end bg-gradient-to-t from-black/80 via-transparent to-transparent pb-4">
+              <Loader2 size={22} className="mb-2 animate-spin text-[#00FF87]" />
+              <p className="px-3 text-center text-[11px] font-medium text-zinc-200">
+                {renderProgress ?? "숏츠 영상 제작 중..."}
+              </p>
+            </div>
+          </div>
+        ) : null}
+      </div>
 
       <div className="mt-4">
         <p className="mb-2 text-center text-[12px] text-gray-400">

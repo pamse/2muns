@@ -217,28 +217,44 @@ type CompositorStage = {
   destroy: () => void;
 };
 
-/** 캔버스·소스 비디오를 DOM에 부착해 Safari 디코드/캡처 우선순위 유지 */
-function createCompositorStage(canvas: HTMLCanvasElement): CompositorStage {
+/** iOS Safari: 보이는 DOM 트리에 캔버스를 두어 captureStream 인코딩 유지 */
+function createCompositorStage(
+  canvas: HTMLCanvasElement,
+  mountEl?: HTMLElement | null,
+): CompositorStage {
   const root = document.createElement("div");
   root.setAttribute("data-weekly-shorts-compositor", "true");
-  root.setAttribute("aria-hidden", "true");
-  root.style.cssText =
-    "position:fixed;left:0;top:0;width:120px;height:213px;opacity:0.01;pointer-events:none;z-index:-1;overflow:hidden";
-  canvas.style.display = "block";
-  canvas.style.width = `${SHORTS_CANVAS_WIDTH}px`;
-  canvas.style.height = `${SHORTS_CANVAS_HEIGHT}px`;
-  root.appendChild(canvas);
-  document.body.appendChild(root);
+  const visibleInModal = Boolean(mountEl);
+
+  if (visibleInModal && mountEl) {
+    root.style.cssText =
+      "position:absolute;inset:0;width:100%;height:100%;opacity:1;pointer-events:none;overflow:hidden;z-index:20;background:#000";
+    canvas.style.cssText = "display:block;width:100%;height:100%;object-fit:cover";
+    root.appendChild(canvas);
+    mountEl.appendChild(root);
+  } else {
+    root.style.cssText =
+      "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.99;pointer-events:none;z-index:9999;overflow:hidden;background:#000";
+    canvas.style.display = "block";
+    canvas.style.width = `${SHORTS_CANVAS_WIDTH}px`;
+    canvas.style.height = `${SHORTS_CANVAS_HEIGHT}px`;
+    root.appendChild(canvas);
+    document.body.appendChild(root);
+  }
 
   let activeVideo: HTMLVideoElement | null = null;
+  const videoStyle = visibleInModal
+    ? "position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:1"
+    : "position:absolute;left:0;top:0;width:1px;height:1px;object-fit:cover;opacity:0.99";
 
   return {
     attachVideo(video: HTMLVideoElement) {
       this.detachVideo();
       video.volume = 0;
       video.muted = true;
-      video.style.cssText =
-        "position:absolute;left:0;top:0;width:120px;height:213px;object-fit:cover;opacity:0.01";
+      video.playsInline = true;
+      video.setAttribute("playsinline", "");
+      video.style.cssText = videoStyle;
       root.appendChild(video);
       activeVideo = video;
     },
@@ -492,8 +508,10 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   weekSlots: WeeklyShortsWeekSlot[];
   doubleSpeed: boolean;
   onProgress?: (message: string) => void;
+  /** 모달 미리보기 영역 — Safari용 가시 캔버스 마운트 */
+  compositorMountEl?: HTMLElement | null;
 }): Promise<Blob> {
-  const { segments, weekSlots, doubleSpeed, onProgress } = input;
+  const { segments, weekSlots, doubleSpeed, onProgress, compositorMountEl } = input;
   if (segments.length === 0) {
     throw new Error("합성할 인증 영상이 없습니다.");
   }
@@ -509,7 +527,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     throw new Error("Canvas를 초기화하지 못했습니다.");
   }
 
-  const stage = createCompositorStage(canvas);
+  const stage = createCompositorStage(canvas, compositorMountEl);
 
   const mimeType = pickCanvasRecorderMimeType();
   if (!mimeType) {
