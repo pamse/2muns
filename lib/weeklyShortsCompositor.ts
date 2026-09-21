@@ -6,21 +6,21 @@ import {
 
 export const SHORTS_CANVAS_WIDTH = 1080;
 export const SHORTS_CANVAS_HEIGHT = 1920;
-export const SHORTS_CANVAS_WIDTH_MOBILE = 720;
-export const SHORTS_CANVAS_HEIGHT_MOBILE = 1280;
+/** @deprecated 모바일도 FHD(1080×1920) 합성 — 하위 호환용 상수 */
+export const SHORTS_CANVAS_WIDTH_MOBILE = SHORTS_CANVAS_WIDTH;
+/** @deprecated 모바일도 FHD(1080×1920) 합성 — 하위 호환용 상수 */
+export const SHORTS_CANVAS_HEIGHT_MOBILE = SHORTS_CANVAS_HEIGHT;
 
 const SEGMENT_FALLBACK_SEC = 3;
 const CLIP_WALL_MS = 3000;
 const CLIP_WALL_MS_FAST = 1500;
 const RECORD_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / RECORD_FPS;
-/** 720p·15초 합성 성공 기준 (Fallback은 이보다 작을 때만) */
+/** FHD·15초+ 합성 성공 기준 (Fallback은 이보다 작을 때만) */
 const MIN_HIGHLIGHT_BYTES = 200_000;
 const POST_RECORD_BUFFER_MS = 500;
-/** 1080p desktop 합성 */
-const RECORDER_VIDEO_BPS = 5_000_000;
-/** 720p mobile — 18초 기준 약 8~11MB, 계단 현상 완화 */
-const RECORDER_VIDEO_BPS_MOBILE = 4_000_000;
+/** 1080×1920 @ ~18s — 약 12~18MB 목표 */
+const RECORDER_VIDEO_BPS_FHD = 7_000_000;
 
 function isIosWebKit(): boolean {
   if (typeof navigator === "undefined") return false;
@@ -31,25 +31,17 @@ function isIosWebKit(): boolean {
   return iosDevice;
 }
 
-function isMobileCompositorEnvironment(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent;
-  if (isIosWebKit()) return true;
-  return /Android/i.test(ua) && /Mobile/i.test(ua);
-}
-
 export function resolveShortsCanvasSize(): {
   width: number;
   height: number;
   pureVideoCapture: boolean;
   videoBitsPerSecond: number;
 } {
-  const mobile = isMobileCompositorEnvironment();
   return {
-    width: mobile ? SHORTS_CANVAS_WIDTH_MOBILE : SHORTS_CANVAS_WIDTH,
-    height: mobile ? SHORTS_CANVAS_HEIGHT_MOBILE : SHORTS_CANVAS_HEIGHT,
+    width: SHORTS_CANVAS_WIDTH,
+    height: SHORTS_CANVAS_HEIGHT,
     pureVideoCapture: isIosWebKit(),
-    videoBitsPerSecond: mobile ? RECORDER_VIDEO_BPS_MOBILE : RECORDER_VIDEO_BPS,
+    videoBitsPerSecond: RECORDER_VIDEO_BPS_FHD,
   };
 }
 
