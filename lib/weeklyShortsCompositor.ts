@@ -18,7 +18,6 @@ const MIN_HIGHLIGHT_BYTES = 200_000;
 const POST_RECORD_BUFFER_MS = 500;
 const RECORDER_VIDEO_BPS = 3_000_000;
 const RECORDER_VIDEO_BPS_MOBILE = 2_500_000;
-const RECORDER_TIMESLICE_MS = 1000;
 
 function isIosWebKit(): boolean {
   if (typeof navigator === "undefined") return false;
@@ -221,21 +220,6 @@ function wallClockDelay(ms: number) {
 
 function sumChunkBytes(chunks: Blob[]): number {
   return chunks.reduce((sum, c) => sum + c.size, 0);
-}
-
-/** iOS Safari: timeslice 자동 배출이 멈출 때 수동 플러시 */
-function flushMediaRecorder(
-  recorder: MediaRecorder,
-  logDebug?: (message: string) => void,
-  label?: string,
-): void {
-  if (recorder.state !== "recording") return;
-  try {
-    recorder.requestData();
-    logDebug?.(`requestData${label ? ` (${label})` : ""}`);
-  } catch {
-    // Safari 구버전
-  }
 }
 
 function videoSrcMatches(video: HTMLVideoElement, url: string): boolean {
@@ -806,12 +790,13 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     );
   };
 
-  recorder.start(RECORDER_TIMESLICE_MS);
+  // iOS Safari: start(timeslice) / requestData()는 인코더 동결 → stop() 시 단일 blob만 사용
+  recorder.start();
   const recordWallStart = performance.now();
   const expectedRecordMs =
     segments.length * clipWallDurationMs(doubleSpeed) + POST_RECORD_BUFFER_MS;
   logDebug(
-    `MediaRecorder state=${recorder.state} timeslice=${RECORDER_TIMESLICE_MS}ms bps=${canvasSize.videoBitsPerSecond} ` +
+    `MediaRecorder state=${recorder.state} start() no-timeslice bps=${canvasSize.videoBitsPerSecond} ` +
       `expectedWall≈${Math.round(expectedRecordMs / 1000)}s`,
   );
   onProgress?.("숏츠 영상 제작 중...");
@@ -850,11 +835,6 @@ export async function renderWeeklyShortsHighlightVideo(input: {
         sharedPreviewVideo,
         logDebug,
       );
-      flushMediaRecorder(recorder, logDebug, `clip ${clipIndex + 1} DAY ${segment.day} end`);
-      await wallClockDelay(80);
-      logDebug(
-        `post-clip flush chunks=${chunks.length} sum=${Math.round(sumChunkBytes(chunks) / 1024)}KB`,
-      );
     }
 
     const tailOpts: FrameDrawOpts = {
@@ -881,24 +861,14 @@ export async function renderWeeklyShortsHighlightVideo(input: {
       await delay(POST_RECORD_BUFFER_MS);
     }
 
-    for (let flushRound = 0; flushRound < 4; flushRound += 1) {
-      flushMediaRecorder(recorder, logDebug, `pre-stop ${flushRound + 1}/4`);
-      commitCompositorFrame(ctx, canvasVideoStream, null, tailOpts);
-      await wallClockDelay(150);
-    }
     logDebug(
-      `pre-stop flush 완료 chunks=${chunks.length} sum=${Math.round(sumChunkBytes(chunks) / 1024)}KB ` +
-        `(Safari는 1~3개 대형 chunk 정상)`,
+      `녹화 종료 직전 (중간 requestData 없음) wall=${Math.round(performance.now() - recordWallStart)}ms`,
     );
   } finally {
     if (recorder.state === "recording") {
-      flushMediaRecorder(recorder, logDebug, "final");
-      await wallClockDelay(300);
-      flushMediaRecorder(recorder, logDebug, "final-2");
-      await wallClockDelay(500);
+      await wallClockDelay(POST_RECORD_BUFFER_MS);
       logDebug(
-        `recorder.stop() chunks=${chunks.length} sum=${Math.round(sumChunkBytes(chunks) / 1024)}KB ` +
-          `wall=${Math.round(performance.now() - recordWallStart)}ms`,
+        `recorder.stop() 호출 wall=${Math.round(performance.now() - recordWallStart)}ms`,
       );
       recorder.stop();
     }
