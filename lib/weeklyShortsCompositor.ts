@@ -1,5 +1,6 @@
 import {
   getSupportedVerificationMimeType,
+  MIN_VERIFICATION_VIDEO_BYTES,
   wrapBlobAsMp4Download,
 } from "@/lib/videoFormat";
 
@@ -57,6 +58,79 @@ export type WeeklyShortsRenderClip = {
   title: string;
   videoUrl: string;
 };
+
+type PreparedRenderClip = WeeklyShortsRenderClip & {
+  /** canvas drawImage용 — blob: URL 또는 CORS 실패 시 원격 URL */
+  playbackUrl: string;
+  blobPreloaded: boolean;
+};
+
+async function preloadSegmentsAsBlobUrls(
+  segments: WeeklyShortsRenderClip[],
+  logDebug?: (message: string) => void,
+): Promise<{ segments: PreparedRenderClip[]; revoke: () => void }> {
+  const objectUrls: string[] = [];
+
+  const prepared = await Promise.all(
+    segments.map(async (segment): Promise<PreparedRenderClip> => {
+      try {
+        const res = await fetch(segment.videoUrl, { mode: "cors" });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const blob = await res.blob();
+        if (blob.size < MIN_VERIFICATION_VIDEO_BYTES) {
+          throw new Error(`blob too small (${blob.size}B)`);
+        }
+        const localUrl = URL.createObjectURL(blob);
+        objectUrls.push(localUrl);
+        logDebug?.(
+          `DAY ${segment.day} blob preload OK ${Math.round(blob.size / 1024)}KB`,
+        );
+        return {
+          ...segment,
+          playbackUrl: localUrl,
+          blobPreloaded: true,
+        };
+      } catch (err) {
+        console.warn("[WeeklyShortsCompositor] Blob preload failed, fallback to original", {
+          day: segment.day,
+          err,
+        });
+        logDebug?.(
+          `DAY ${segment.day} blob preload 실패 → 원격 URL (${err instanceof Error ? err.message : "unknown"})`,
+        );
+        return {
+          ...segment,
+          playbackUrl: segment.videoUrl,
+          blobPreloaded: false,
+        };
+      }
+    }),
+  );
+
+  return {
+    segments: prepared,
+    revoke: () => {
+      for (const url of objectUrls) {
+        URL.revokeObjectURL(url);
+      }
+    },
+  };
+}
+
+function logCanvasCorsReadable(
+  ctx: CanvasRenderingContext2D,
+  debugLog?: (message: string) => void,
+  label?: string,
+) {
+  try {
+    ctx.getImageData(0, 0, 1, 1);
+    debugLog?.(`canvas CORS readable${label ? ` (${label})` : ""}`);
+  } catch {
+    debugLog?.(`canvas CORS TAINTED${label ? ` (${label})` : ""}`);
+  }
+}
 
 export type WeeklyShortsWeekSlot = {
   day: number;
@@ -538,6 +612,7 @@ async function playAndDrawClip(
   activeSlotIndex: number,
   doubleSpeed: boolean,
   debugLog?: (message: string) => void,
+  corsProbeCtx?: CanvasRenderingContext2D,
 ): Promise<void> {
   const scrubSpanSec =
     Number.isFinite(video.duration) && video.duration > 0
@@ -583,6 +658,10 @@ async function playAndDrawClip(
     commitCompositorFrame(ctx, canvasVideoStream, video, drawOpts);
     frameCount += 1;
 
+    if (frameCount === 1 && corsProbeCtx) {
+      logCanvasCorsReadable(corsProbeCtx, debugLog, `DAY ${segment.day} f1`);
+    }
+
     if (
       frameCount === 1 ||
       wallElapsed >= durationMs * 0.5 - 25 ||
@@ -608,7 +687,7 @@ async function playSegmentOnCanvas(
   ctx: CanvasRenderingContext2D,
   canvasVideoStream: MediaStream,
   stage: CompositorStage,
-  segment: WeeklyShortsRenderClip,
+  segment: PreparedRenderClip,
   weekSlots: WeeklyShortsWeekSlot[],
   activeSlotIndex: number,
   doubleSpeed: boolean,
@@ -616,16 +695,19 @@ async function playSegmentOnCanvas(
   sharedPreviewVideo: HTMLVideoElement | null | undefined,
   debugLog?: (message: string) => void,
 ): Promise<void> {
+  const playbackUrl = segment.playbackUrl;
+
   if (sharedPreviewVideo) {
     try {
       await prepareClipOnVideo(
         sharedPreviewVideo,
-        segment.videoUrl,
+        playbackUrl,
         doubleSpeed,
         debugLog,
       );
       debugLog?.(
-        `클립 ${clipIndex + 1} (DAY ${segment.day}) 미리보기 video 로드 ${sharedPreviewVideo.videoWidth}x${sharedPreviewVideo.videoHeight}`,
+        `클립 ${clipIndex + 1} (DAY ${segment.day}) 미리보기 video 로드 ${sharedPreviewVideo.videoWidth}x${sharedPreviewVideo.videoHeight} ` +
+          `(blob=${segment.blobPreloaded})`,
       );
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown";
@@ -641,13 +723,14 @@ async function playSegmentOnCanvas(
       activeSlotIndex,
       doubleSpeed,
       debugLog,
+      ctx,
     );
     return;
   }
 
   let video: HTMLVideoElement;
   try {
-    video = await loadVideoElement(segment.videoUrl, segment.day);
+    video = await loadVideoElement(playbackUrl, segment.day);
     debugLog?.(
       `클립 ${clipIndex + 1} (DAY ${segment.day}) 로드 성공 ${video.videoWidth}x${video.videoHeight}`,
     );
@@ -668,6 +751,7 @@ async function playSegmentOnCanvas(
       activeSlotIndex,
       doubleSpeed,
       debugLog,
+      ctx,
     );
   } finally {
     video.pause();
@@ -715,6 +799,13 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     throw new Error("이 브라우저에서는 숏츠 영상 합성을 지원하지 않습니다.");
   }
 
+  onProgress?.("영상 로컬 준비 중...");
+  const { segments: preparedSegments, revoke: revokeBlobUrls } =
+    await preloadSegmentsAsBlobUrls(segments, logDebug);
+  const blobOkCount = preparedSegments.filter((s) => s.blobPreloaded).length;
+  logDebug(`blob preload 완료 ${blobOkCount}/${preparedSegments.length}`);
+
+  try {
   const canvasSize = resolveShortsCanvasSize();
   const canvas = document.createElement("canvas");
   canvas.width = canvasSize.width;
@@ -794,7 +885,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   recorder.start();
   const recordWallStart = performance.now();
   const expectedRecordMs =
-    segments.length * clipWallDurationMs(doubleSpeed) + POST_RECORD_BUFFER_MS;
+    preparedSegments.length * clipWallDurationMs(doubleSpeed) + POST_RECORD_BUFFER_MS;
   logDebug(
     `MediaRecorder state=${recorder.state} start() no-timeslice bps=${canvasSize.videoBitsPerSecond} ` +
       `expectedWall≈${Math.round(expectedRecordMs / 1000)}s`,
@@ -802,8 +893,8 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   onProgress?.("숏츠 영상 제작 중...");
 
   const warmupOpts: FrameDrawOpts = {
-    day: segments[0]?.day ?? 1,
-    title: segments[0]?.title ?? "",
+    day: preparedSegments[0]?.day ?? 1,
+    title: preparedSegments[0]?.title ?? "",
     weekSlots,
     activeSlotIndex: 0,
   };
@@ -816,8 +907,8 @@ export async function renderWeeklyShortsHighlightVideo(input: {
   }
 
   try {
-    for (let clipIndex = 0; clipIndex < segments.length; clipIndex += 1) {
-      const segment = segments[clipIndex]!;
+    for (let clipIndex = 0; clipIndex < preparedSegments.length; clipIndex += 1) {
+      const segment = preparedSegments[clipIndex]!;
       const activeSlotIndex = Math.max(
         0,
         weekSlots.findIndex((s) => s.day === segment.day),
@@ -838,8 +929,8 @@ export async function renderWeeklyShortsHighlightVideo(input: {
     }
 
     const tailOpts: FrameDrawOpts = {
-      day: segments[segments.length - 1]?.day ?? 1,
-      title: segments[segments.length - 1]?.title ?? "",
+      day: preparedSegments[preparedSegments.length - 1]?.day ?? 1,
+      title: preparedSegments[preparedSegments.length - 1]?.title ?? "",
       weekSlots,
       activeSlotIndex: weekSlots.length - 1,
     };
@@ -890,4 +981,7 @@ export async function renderWeeklyShortsHighlightVideo(input: {
 
   logDebug("합성 성공 — Blob 다운로드 준비");
   return { mode: "composited", blob: wrapBlobAsMp4Download(raw) };
+  } finally {
+    revokeBlobUrls();
+  }
 }
