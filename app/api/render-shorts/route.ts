@@ -140,19 +140,35 @@ function buildClipVideoFilter(
   fontPath: string,
   captionTextfilePath: string,
 ): string {
-  const badgeLabel = "2müns";
+  const badgeX = 48;
+  const badgeY = 72;
+  const badgeW = 220;
+  const badgeH = 58;
+  const badgeTextX = badgeX + 22;
+  const badgeTextY = badgeY + 14 + 34;
+  const badgeTwoWidthPx = 21;
+
   const normalize = [
-    `fps=${OUTPUT_FPS}`,
-    "format=yuv420p",
-    "setsar=1",
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
     `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
+    "setsar=1",
+    `tpad=stop_mode=clone:stop_duration=${CLIP_DURATION_SEC}`,
+    `trim=duration=${CLIP_DURATION_SEC}`,
+    "setpts=PTS-STARTPTS",
+    `fps=${OUTPUT_FPS}`,
+    "format=yuv420p",
   ];
 
-  const badgeText = buildDrawtextFilter(
-    badgeLabel,
+  const badgeBox = `drawbox=x=${badgeX}:y=${badgeY}:w=${badgeW}:h=${badgeH}:color=black@0.45:t=fill`;
+  const badgeTwo = buildDrawtextFilter(
+    "2",
     fontPath,
-    "fontcolor=0x00FF87:fontsize=34:x=48:y=72:box=1:boxcolor=black@0.45:boxborderw=14",
+    `fontcolor=white:fontsize=34:x=${badgeTextX}:y=${badgeTextY}`,
+  );
+  const badgeMuns = buildDrawtextFilter(
+    "müns",
+    fontPath,
+    `fontcolor=0x00FF87:fontsize=34:x=${badgeTextX + badgeTwoWidthPx}:y=${badgeTextY}`,
   );
   const dayText = buildDrawtextFilter(
     `DAY ${day} / 66`,
@@ -165,7 +181,7 @@ function buildClipVideoFilter(
     "fontcolor=white@0.82:fontsize=34:x=(w-text_w)/2:y=h-132",
   );
 
-  return [...normalize, badgeText, dayText, captionText].join(",");
+  return [...normalize, badgeBox, badgeTwo, badgeMuns, dayText, captionText].join(",");
 }
 
 function assertSafeVideoUrl(raw: string): string {
@@ -228,10 +244,8 @@ async function renderSingleClip(
 
   await runFfmpeg(
     ffmpeg(inputPath)
-      .inputOptions(["-stream_loop", "-1", "-fflags", "+genpts"])
+      .inputOptions(["-fflags", "+genpts"])
       .outputOptions([
-        "-t",
-        String(CLIP_DURATION_SEC),
         "-vf",
         vf,
         "-c:v",
@@ -246,6 +260,10 @@ async function renderSingleClip(
         String(OUTPUT_FPS),
         "-vsync",
         "cfr",
+        "-frames:v",
+        String(CLIP_DURATION_SEC * OUTPUT_FPS),
+        "-reset_timestamps",
+        "1",
         "-an",
         "-movflags",
         "+faststart",
