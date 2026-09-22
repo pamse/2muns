@@ -1,7 +1,7 @@
 /** 주차 숏츠 — verifications + Storage 실영상 전용 (더미/Unsplash 없음) */
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { BottomSheet, Logo } from "@/app/ui";
 import {
@@ -9,12 +9,7 @@ import {
   logShortsModalSupabaseError,
   verificationVideoUrl,
 } from "@/lib/verifications";
-import {
-  downloadFallbackVerificationVideo,
-  triggerMp4FileDownload,
-  weekHighlightDownloadFilename,
-} from "@/lib/videoFormat";
-import { renderWeeklyShortsHighlightVideo } from "@/lib/weeklyShortsCompositor";
+import { triggerMp4FileDownload, weekHighlightDownloadFilename } from "@/lib/videoFormat";
 
 function InstagramIcon() {
   return (
@@ -70,15 +65,14 @@ function buildWeekClips(
 function ShortsPreview({
   clips,
   doubleSpeed,
-  videoRef,
   carouselEnabled = true,
 }: {
   clips: WeekShortClip[];
   doubleSpeed: boolean;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
   carouselEnabled?: boolean;
 }) {
   const [index, setIndex] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const playableClips = useMemo(
     () => clips.filter((c): c is WeekShortClip & { videoUrl: string } => Boolean(c.videoUrl)),
     [clips],
@@ -109,7 +103,7 @@ function ShortsPreview({
       el.load();
     }
     void el.play().catch(() => {});
-  }, [clip?.videoUrl, clip?.day, doubleSpeed, carouselEnabled, videoRef]);
+  }, [clip?.videoUrl, clip?.day, doubleSpeed, carouselEnabled]);
 
   if (!clip) {
     return (
@@ -122,46 +116,40 @@ function ShortsPreview({
   const activeSlotIndex = clips.findIndex((c) => c.day === clip.day);
 
   return (
-    <>
+    <div className="relative aspect-[9/16] w-full">
       <video
         ref={videoRef}
         crossOrigin="anonymous"
         autoPlay
         muted
         playsInline
-        className="absolute inset-0 z-0 h-full w-full object-cover opacity-100"
+        className="absolute inset-0 h-full w-full object-cover"
       />
-      {!carouselEnabled ? null : (
-        <>
-          <div className="pointer-events-none absolute inset-0 z-[5] bg-gradient-to-b from-black/45 via-transparent to-black/70" />
-          <div className="pointer-events-none absolute left-2 top-2 z-[5] rounded-md bg-black/45 px-1.5 py-0.5 backdrop-blur-sm">
-            <Logo className="text-[11px] tracking-wide" />
-          </div>
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[5] px-2.5 pb-2.5">
-            <p className="text-center text-[15px] font-extrabold tracking-wide text-white drop-shadow">
-              DAY {clip.day} / 66
-            </p>
-            <p className="mt-0.5 text-center text-[10px] font-medium text-white/80">
-              {clip.title}
-            </p>
-            <div className="mt-2 flex gap-0.5">
-              {clips.map((c, i) => (
-                <span
-                  key={c.day}
-                  className={`h-0.5 flex-1 rounded-full ${
-                    i === activeSlotIndex
-                      ? "bg-[#00FF87]"
-                      : c.videoUrl
-                        ? "bg-white/45"
-                        : "bg-white/20"
-                  }`}
-                />
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-    </>
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/70" />
+      <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/45 px-1.5 py-0.5 backdrop-blur-sm">
+        <Logo className="text-[11px] tracking-wide" />
+      </div>
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 px-2.5 pb-2.5">
+        <p className="text-center text-[15px] font-extrabold tracking-wide text-white drop-shadow">
+          DAY {clip.day} / 66
+        </p>
+        <p className="mt-0.5 text-center text-[10px] font-medium text-white/80">{clip.title}</p>
+        <div className="mt-2 flex gap-0.5">
+          {clips.map((c, i) => (
+            <span
+              key={c.day}
+              className={`h-0.5 flex-1 rounded-full ${
+                i === activeSlotIndex
+                  ? "bg-[#00FF87]"
+                  : c.videoUrl
+                    ? "bg-white/45"
+                    : "bg-white/20"
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -181,39 +169,12 @@ export function WeeklyShortsModal({
   const [doubleSpeed, setDoubleSpeed] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [saveNotice, setSaveNotice] = useState<"highlight" | "fallback" | null>(null);
+  const [saved, setSaved] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadingClips, setLoadingClips] = useState(false);
   const [clips, setClips] = useState<WeekShortClip[]>([]);
   const [renderProgress, setRenderProgress] = useState<string | null>(null);
-  const [debugLogs, setDebugLogs] = useState<string[]>([]);
-  const compositorMountRef = useRef<HTMLDivElement>(null);
-  const previewVideoRef = useRef<HTMLVideoElement>(null);
-
-  const appendDebugLog = useCallback((line: string) => {
-    setDebugLogs((prev) => [...prev.slice(-19), line]);
-  }, []);
-
-  const waitCompositorMount = useCallback(async () => {
-    for (let i = 0; i < 8; i += 1) {
-      if (compositorMountRef.current) return compositorMountRef.current;
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => resolve());
-      });
-    }
-    return compositorMountRef.current;
-  }, []);
-
-  const waitPreviewVideo = useCallback(async () => {
-    for (let i = 0; i < 24; i += 1) {
-      if (previewVideoRef.current) return previewVideoRef.current;
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => resolve());
-      });
-    }
-    return previewVideoRef.current;
-  }, []);
 
   const verifiedCount = useMemo(
     () => clips.filter((c) => c.videoUrl).length,
@@ -232,14 +193,9 @@ export function WeeklyShortsModal({
     [clips],
   );
 
-  const weekSlots = useMemo(
-    () => clips.map((c) => ({ day: c.day, hasVideo: Boolean(c.videoUrl) })),
-    [clips],
-  );
-
   useEffect(() => {
     if (!open) {
-      setSaveNotice(null);
+      setSaved(false);
       setActionError(null);
       return;
     }
@@ -259,21 +215,9 @@ export function WeeklyShortsModal({
     setLoadingClips(true);
     setLoadError(null);
 
-    console.info("[WeeklyShortsModal] SELECT verifications", {
-      groupId: gid,
-      userId: uid,
-      week,
-      fromDay,
-      toDay,
-    });
-
     void fetchUserVerificationsInRange(gid, uid, fromDay, toDay)
       .then((rows) => {
         if (cancelled) return;
-        console.info("[WeeklyShortsModal] loaded", rows.length, "rows", {
-          days: rows.map((r) => r.day),
-          paths: rows.map((r) => r.video_path),
-        });
         setClips(buildWeekClips(week, rows));
       })
       .catch((err: unknown) => {
@@ -297,55 +241,31 @@ export function WeeklyShortsModal({
     };
   }, [open, groupId, userId, week]);
 
-  function pickFallbackVerificationUrl(): string | null {
-    const last = renderSegments[renderSegments.length - 1];
-    if (last?.videoUrl) return last.videoUrl;
-    const first = renderSegments[0];
-    return first?.videoUrl ?? null;
-  }
-
-  async function composeHighlightOrFallback(): Promise<
-    { kind: "composited"; blob: Blob } | { kind: "fallback" }
-  > {
-    const mountEl = await waitCompositorMount();
-    const previewVideo = await waitPreviewVideo();
-    appendDebugLog(
-      `[0] DOM mount ${mountEl ? `ok ${Math.round(mountEl.clientWidth)}x${Math.round(mountEl.clientHeight)}` : "missing"}`,
-    );
-    appendDebugLog(
-      `[0] previewVideo ${previewVideo ? `ok ${previewVideo.videoWidth}x${previewVideo.videoHeight}` : "missing"}`,
-    );
-    if (!previewVideo) {
-      throw new Error("미리보기 비디오를 찾을 수 없습니다. 다시 시도해 주세요.");
-    }
-    const result = await renderWeeklyShortsHighlightVideo({
-      segments: renderSegments,
-      weekSlots,
-      doubleSpeed,
-      compositorMountEl: mountEl,
-      sharedPreviewVideo: previewVideo,
-      onProgress: (message) => setRenderProgress(message),
-      onDebugLog: appendDebugLog,
+  async function fetchServerRenderedHighlight(): Promise<Blob> {
+    const res = await fetch("/api/render-shorts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clips: renderSegments.map((segment) => ({
+          videoUrl: segment.videoUrl,
+          day: segment.day,
+        })),
+        weekNumber: week,
+      }),
     });
 
-    if (result.mode === "canvas_buffer_too_small") {
-      console.warn(
-        "[Compositor Fallback] Safari 캔버스 버퍼 부족 감지 -> 원본 MP4 다운로드로 자동 전환",
-        { recordedBytes: result.recordedBytes },
-      );
-      appendDebugLog(
-        `[!] Fallback 전환 (${Math.round(result.recordedBytes / 1024)}KB) -> 원본 MP4`,
-      );
-      const originalUrl = pickFallbackVerificationUrl();
-      if (!originalUrl) {
-        throw new Error("원본 인증 영상을 찾을 수 없습니다.");
+    if (!res.ok) {
+      let message = "서버 렌더링 실패";
+      try {
+        const data = (await res.json()) as { error?: string };
+        if (data.error?.trim()) message = data.error.trim();
+      } catch {
+        // non-JSON error body
       }
-      await downloadFallbackVerificationVideo(originalUrl, week);
-      appendDebugLog("[!] Fallback 원본 다운로드 요청 완료");
-      return { kind: "fallback" };
+      throw new Error(message);
     }
 
-    return { kind: "composited", blob: result.blob };
+    return res.blob();
   }
 
   async function handleDownload() {
@@ -356,27 +276,19 @@ export function WeeklyShortsModal({
     }
 
     setActionError(null);
-    setDebugLogs([]);
+    setSaved(false);
     setDownloading(true);
-    setRenderProgress("숏츠 영상 제작 중...");
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => resolve());
-    });
+    setRenderProgress("FHD 고화질 숏츠 렌더링 중...");
+
     try {
-      const outcome = await composeHighlightOrFallback();
-      if (outcome.kind === "composited") {
-        triggerMp4FileDownload(outcome.blob, weekHighlightDownloadFilename(week));
-        setSaveNotice("highlight");
-      } else {
-        setSaveNotice("fallback");
-      }
+      const blob = await fetchServerRenderedHighlight();
+      triggerMp4FileDownload(blob, weekHighlightDownloadFilename(week));
+      setSaved(true);
     } catch (err) {
       console.error("Download error:", err);
       const message =
         err instanceof Error ? err.message : "영상 저장에 실패했습니다.";
       logShortsModalSupabaseError("WeeklyShortsModal.download", { message });
-      setSaveNotice(null);
-      appendDebugLog(`[ERR] ${message}`);
       window.alert(message);
       setActionError(message);
     } finally {
@@ -393,21 +305,14 @@ export function WeeklyShortsModal({
     }
 
     setActionError(null);
-    setDebugLogs([]);
+    setSaved(false);
     setSharing(true);
-    setRenderProgress("숏츠 영상 제작 중...");
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => resolve());
-    });
+    setRenderProgress("FHD 고화질 숏츠 렌더링 중...");
+
     try {
-      const outcome = await composeHighlightOrFallback();
-      if (outcome.kind === "fallback") {
-        setSaveNotice("fallback");
-        return;
-      }
-      const file = new File([outcome.blob], weekHighlightDownloadFilename(week), {
-        type: "video/mp4",
-      });
+      const blob = await fetchServerRenderedHighlight();
+      const filename = weekHighlightDownloadFilename(week);
+      const file = new File([blob], filename, { type: "video/mp4" });
       const nav = navigator as Navigator & {
         canShare?: (data: ShareData) => boolean;
       };
@@ -417,16 +322,16 @@ export function WeeklyShortsModal({
           title: `2müns ${week}주 차 숏츠`,
           text: "이번 주 인증 하이라이트",
         });
-        setSaveNotice("highlight");
+        setSaved(true);
       } else {
-        triggerMp4FileDownload(outcome.blob, weekHighlightDownloadFilename(week));
-        setSaveNotice("highlight");
+        triggerMp4FileDownload(blob, filename);
+        setSaved(true);
       }
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") {
         const message = err.message || "공유에 실패했습니다.";
-        appendDebugLog(`[ERR] ${message}`);
         setActionError(message);
+        window.alert(message);
       }
     } finally {
       setSharing(false);
@@ -434,8 +339,7 @@ export function WeeklyShortsModal({
     }
   }
 
-  const visibleDebugLogs = debugLogs.slice(-5);
-  const exporting = downloading || sharing;
+  const busy = downloading || sharing;
 
   if (!open) return null;
 
@@ -472,20 +376,12 @@ export function WeeklyShortsModal({
           {renderProgress}
         </p>
       ) : null}
-      {saveNotice === "highlight" ? (
+      {saved ? (
         <p
           role="status"
           className="mb-4 rounded-xl border border-[#00FF87]/30 bg-[#00FF87]/10 px-3 py-2.5 text-[13px] font-medium leading-relaxed text-white"
         >
           기기에 성공적으로 저장되었습니다! 인스타 릴스나 유튜브 숏츠에 올려보세요.
-        </p>
-      ) : null}
-      {saveNotice === "fallback" ? (
-        <p
-          role="status"
-          className="mb-4 rounded-xl border border-sky-500/35 bg-sky-500/10 px-3 py-2.5 text-[13px] font-medium leading-relaxed text-sky-100"
-        >
-          모바일 Safari 환경에 맞춰 고화질 인증 MP4 영상으로 저장되었습니다.
         </p>
       ) : null}
 
@@ -499,23 +395,20 @@ export function WeeklyShortsModal({
         {!loadingClips && verifiedCount > 0 ? (
           <div
             className={`relative overflow-hidden rounded-[22px] border bg-black shadow-[0_0_28px_#00FF8728] ${
-              exporting ? "border-[#00FF87]/40" : "border-white/15"
+              busy ? "border-[#00FF87]/40" : "border-white/15"
             }`}
-            aria-busy={exporting}
+            aria-busy={busy}
           >
-            <div ref={compositorMountRef} className="relative aspect-[9/16] w-full">
-              <ShortsPreview
-                clips={clips}
-                doubleSpeed={doubleSpeed}
-                videoRef={previewVideoRef}
-                carouselEnabled={!exporting}
-              />
-            </div>
-            {exporting ? (
+            <ShortsPreview
+              clips={clips}
+              doubleSpeed={doubleSpeed}
+              carouselEnabled={!busy}
+            />
+            {busy ? (
               <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-end bg-gradient-to-t from-black/80 via-transparent to-transparent pb-4">
                 <Loader2 size={22} className="mb-2 animate-spin text-[#00FF87]" />
                 <p className="px-3 text-center text-[11px] font-medium text-zinc-200">
-                  {renderProgress ?? "숏츠 영상 제작 중..."}
+                  {renderProgress ?? "FHD 고화질 숏츠 렌더링 중..."}
                 </p>
               </div>
             ) : null}
@@ -572,18 +465,18 @@ export function WeeklyShortsModal({
         <button
           type="button"
           onClick={() => void handleDownload()}
-          disabled={downloading || loadingClips || verifiedCount === 0}
+          disabled={busy || loadingClips || verifiedCount === 0}
           className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#00FF87] text-sm font-bold text-black transition-[filter] hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
         >
           {downloading ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
-          {downloading ? "숏츠 영상 제작 중..." : "MP4 영상 저장하기"}
+          {downloading ? "FHD 고화질 숏츠 렌더링 중..." : "MP4 영상 저장하기"}
         </button>
 
         <div className="rounded-xl bg-[linear-gradient(45deg,#f9ce34,#ee2a7b,#6228d7)] p-[1.5px]">
           <button
             type="button"
             onClick={() => void handleShareReels()}
-            disabled={sharing || downloading || loadingClips || verifiedCount === 0}
+            disabled={busy || loadingClips || verifiedCount === 0}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-[10.5px] bg-[#1B1D22] text-sm font-bold text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
           >
             <InstagramIcon />
@@ -592,23 +485,9 @@ export function WeeklyShortsModal({
         </div>
       </div>
 
-      {visibleDebugLogs.length > 0 ? (
-        <div
-          className="mt-3 rounded-lg border border-amber-500/25 bg-black/60 px-2.5 py-2 font-mono text-[9px] leading-relaxed text-amber-100/85"
-          aria-live="polite"
-          data-shorts-debug-log
-        >
-          {visibleDebugLogs.map((line, i) => (
-            <p key={`${i}-${line.slice(0, 48)}`} className="break-all">
-              {line}
-            </p>
-          ))}
-        </div>
-      ) : null}
-
       <p className="mt-3 text-center text-[11px] text-gray-500">
-        저장 시 9:16 오버레이(2müns·DAY·프로그레스)가 합성된 주차 하이라이트 MP4가
-        생성됩니다. 인증한 일차 영상이 순서대로 이어집니다.
+        저장 시 서버에서 1080×1920 FHD로 2müns·DAY 오버레이가 합성된 주차 하이라이트 MP4가
+        생성됩니다.
       </p>
 
       <p className="mt-4 text-xs leading-relaxed text-gray-400">

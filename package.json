@@ -10,8 +10,10 @@
     "generate:pwa-icons": "node scripts/generate-pwa-icons.mjs"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.116.0",
+    "fluent-ffmpeg": "^2.1.3",
     "lucide-react": "^1.44.0",
     "next": "16.2.10",
     "react": "19.2.4",
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/postcss": "^4",
+    "@types/fluent-ffmpeg": "^2.1.28",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
