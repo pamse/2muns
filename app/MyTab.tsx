@@ -54,6 +54,10 @@ import {
   resolveStartedAt,
 } from "@/lib/dates";
 import { fetchLiveRanking, type RankUser } from "@/lib/ranking";
+import {
+  SHORTS_FFMPEG_TEST_MODE,
+  SHORTS_TEST_WEEK,
+} from "@/lib/shortsTestMode";
 import { fetchUserVerificationDays } from "@/lib/verifications";
 import {
   BIO_MAX_LENGTH,
@@ -1275,6 +1279,17 @@ export function MyTab({
         </div>
       </section>
 
+      {/* TODO: TEST_MODE_BYPASS — FFmpeg API 실기기 검증용 1주차 모달 진입 */}
+      {selected && started && SHORTS_FFMPEG_TEST_MODE ? (
+        <button
+          type="button"
+          onClick={() => setShowShortsModal(true)}
+          className="w-full rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-left text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/15"
+        >
+          [테스트] {SHORTS_TEST_WEEK}주차 숏츠 열기 (유예·만료 무시)
+        </button>
+      ) : null}
+
       {selected && started && showShortsBanner && shortsWindow ? (
         <div className="relative overflow-hidden rounded-2xl border border-[#00FF87]/40 bg-gradient-to-r from-[#1B1D22] to-[#121316] p-4">
           <button
@@ -1489,7 +1504,11 @@ export function MyTab({
         onClose={() => setShowShortsModal(false)}
         groupId={selected?.id ?? ""}
         userId={myUserId ?? ""}
-        week={shortsWindow?.week ?? 1}
+        week={
+          SHORTS_FFMPEG_TEST_MODE
+            ? SHORTS_TEST_WEEK
+            : (shortsWindow?.week ?? 1)
+        }
       />
 
       <NicknameLimitModal

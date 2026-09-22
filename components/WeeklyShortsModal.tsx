@@ -9,6 +9,10 @@ import {
   logShortsModalSupabaseError,
   verificationVideoUrl,
 } from "@/lib/verifications";
+import {
+  SHORTS_FFMPEG_TEST_MODE,
+  SHORTS_TEST_WEEK,
+} from "@/lib/shortsTestMode";
 import { triggerMp4FileDownload, weekHighlightDownloadFilename } from "@/lib/videoFormat";
 
 function InstagramIcon() {
@@ -241,37 +245,65 @@ export function WeeklyShortsModal({
     };
   }, [open, groupId, userId, week]);
 
+  const apiWeekNumber = SHORTS_FFMPEG_TEST_MODE ? SHORTS_TEST_WEEK : week;
+
+  const apiClips = useMemo(
+    () =>
+      renderSegments.map((segment) => ({
+        videoUrl: segment.videoUrl,
+        day: segment.day,
+      })),
+    [renderSegments],
+  );
+
   async function fetchServerRenderedHighlight(): Promise<Blob> {
+    // TODO: TEST_MODE_BYPASS — 만료·개수 검증 없이 등록된 인증 URL 그대로 API 전달
     const res = await fetch("/api/render-shorts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        clips: renderSegments.map((segment) => ({
-          videoUrl: segment.videoUrl,
-          day: segment.day,
-        })),
-        weekNumber: week,
+        clips: apiClips,
+        weekNumber: apiWeekNumber,
       }),
     });
 
     if (!res.ok) {
-      let message = "서버 렌더링 실패";
+      let detail = "";
       try {
-        const data = (await res.json()) as { error?: string };
-        if (data.error?.trim()) message = data.error.trim();
+        const raw = await res.text();
+        if (raw.trim()) {
+          try {
+            const data = JSON.parse(raw) as { error?: string };
+            detail = data.error?.trim() || raw.trim();
+          } catch {
+            detail = raw.trim().slice(0, 300);
+          }
+        }
       } catch {
-        // non-JSON error body
+        // ignore body read errors
       }
+      const message = `서버 렌더링 실패 (${res.status} ${res.statusText})${
+        detail ? `\n${detail}` : ""
+      }`;
       throw new Error(message);
     }
 
     return res.blob();
   }
 
+  const canSaveMp4 =
+    SHORTS_FFMPEG_TEST_MODE || (verifiedCount > 0 && apiClips.length > 0);
+
   async function handleDownload() {
     if (downloading) return;
-    if (renderSegments.length === 0) {
+    if (!SHORTS_FFMPEG_TEST_MODE && renderSegments.length === 0) {
       window.alert("다운로드할 인증 영상이 없습니다.");
+      return;
+    }
+    if (apiClips.length === 0) {
+      window.alert(
+        "TEST_MODE: API에 보낼 인증 영상 URL이 없습니다. 1주차(일차 1~7)에 업로드된 영상이 있는지 확인해 주세요.",
+      );
       return;
     }
 
@@ -282,7 +314,7 @@ export function WeeklyShortsModal({
 
     try {
       const blob = await fetchServerRenderedHighlight();
-      triggerMp4FileDownload(blob, weekHighlightDownloadFilename(week));
+      triggerMp4FileDownload(blob, weekHighlightDownloadFilename(apiWeekNumber));
       setSaved(true);
     } catch (err) {
       console.error("Download error:", err);
@@ -299,8 +331,12 @@ export function WeeklyShortsModal({
 
   async function handleShareReels() {
     if (sharing || downloading) return;
-    if (renderSegments.length === 0) {
+    if (!SHORTS_FFMPEG_TEST_MODE && renderSegments.length === 0) {
       window.alert("공유할 인증 영상이 없습니다.");
+      return;
+    }
+    if (apiClips.length === 0) {
+      window.alert("TEST_MODE: 공유할 인증 영상 URL이 없습니다.");
       return;
     }
 
@@ -311,7 +347,7 @@ export function WeeklyShortsModal({
 
     try {
       const blob = await fetchServerRenderedHighlight();
-      const filename = weekHighlightDownloadFilename(week);
+      const filename = weekHighlightDownloadFilename(apiWeekNumber);
       const file = new File([blob], filename, { type: "video/mp4" });
       const nav = navigator as Navigator & {
         canShare?: (data: ShareData) => boolean;
@@ -354,9 +390,15 @@ export function WeeklyShortsModal({
     <BottomSheet
       open={open}
       onClose={onClose}
-      title={`${week}주 차 숏츠 미리보기`}
+      title={`${apiWeekNumber}주 차 숏츠 미리보기`}
       data-shorts-source="verifications-storage"
     >
+      {SHORTS_FFMPEG_TEST_MODE ? (
+        <p className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] leading-relaxed text-amber-100">
+          {/* TODO: TEST_MODE_BYPASS */}
+          FFmpeg API 테스트 모드 — 24h 유예·주차 창 조건을 우회합니다.
+        </p>
+      ) : null}
       {loadError ? (
         <p className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-[13px] text-red-200">
           {loadError}
@@ -465,7 +507,7 @@ export function WeeklyShortsModal({
         <button
           type="button"
           onClick={() => void handleDownload()}
-          disabled={busy || loadingClips || verifiedCount === 0}
+          disabled={busy || loadingClips || !canSaveMp4}
           className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#00FF87] text-sm font-bold text-black transition-[filter] hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
         >
           {downloading ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
@@ -476,7 +518,7 @@ export function WeeklyShortsModal({
           <button
             type="button"
             onClick={() => void handleShareReels()}
-            disabled={busy || loadingClips || verifiedCount === 0}
+            disabled={busy || loadingClips || !canSaveMp4}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-[10.5px] bg-[#1B1D22] text-sm font-bold text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
           >
             <InstagramIcon />
