@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "app/api/render-shorts/route.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  }
+}
