@@ -252,6 +252,7 @@ export function WeeklyShortsModal({
       renderSegments.map((segment) => ({
         videoUrl: segment.videoUrl,
         day: segment.day,
+        text: segment.title?.trim() || `DAY ${segment.day}`,
       })),
     [renderSegments],
   );

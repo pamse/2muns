@@ -20,6 +20,7 @@ const OUTPUT_FPS = 30;
 type ShortsClipInput = {
   videoUrl: string;
   day: number;
+  text: string;
 };
 
 type RenderShortsBody = {
@@ -40,12 +41,12 @@ const DRAWText_FONT_CANDIDATES = [
 ].filter((p): p is string => Boolean(p));
 
 const BUNDLED_FONT_URLS = [
+  "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/OTF/Korean/NotoSansCJKkr-Bold.otf",
   "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Bold.ttf",
-  "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf",
 ];
 
 function cachedBundledFontPath(): string {
-  return path.join(os.tmpdir(), "2muns-render-font.ttf");
+  return path.join(os.tmpdir(), "2muns-render-font-kr.otf");
 }
 
 /** Vercel: fontconfig 없음 → TTF 절대경로(fontfile) 필수 */
@@ -105,8 +106,41 @@ function buildDrawtextFilter(text: string, fontPath: string, extras: string): st
   return `drawtext=${fontClause}:text='${safeText}':${extras}`;
 }
 
-function buildClipVideoFilter(day: number, fontPath: string): string {
-  const badgeLabel = "2muns";
+function escapeTextfilePath(filePath: string): string {
+  return path.resolve(filePath).replace(/\\/g, "/").replace(/:/g, "\\:");
+}
+
+function buildDrawtextTextfileFilter(
+  textfilePath: string,
+  fontPath: string,
+  extras: string,
+): string {
+  const fontClause = drawtextFontClause(fontPath);
+  const fileClause = escapeTextfilePath(textfilePath);
+  return `drawtext=${fontClause}:textfile='${fileClause}':${extras}:reload=1`;
+}
+
+function sanitizeCaptionText(raw: string, day: number): string {
+  const oneLine = raw.replace(/[\r\n]+/g, " ").trim().slice(0, 40);
+  return oneLine || `DAY ${day}`;
+}
+
+async function writeCaptionTextFile(
+  workDir: string,
+  clipIndex: number,
+  caption: string,
+): Promise<string> {
+  const filePath = path.join(workDir, `caption-${clipIndex}.txt`);
+  await fs.writeFile(filePath, `${caption}\n`, "utf8");
+  return filePath;
+}
+
+function buildClipVideoFilter(
+  day: number,
+  fontPath: string,
+  captionTextfilePath: string,
+): string {
+  const badgeLabel = "2müns";
   const normalize = [
     `fps=${OUTPUT_FPS}`,
     "format=yuv420p",
@@ -125,8 +159,13 @@ function buildClipVideoFilter(day: number, fontPath: string): string {
     fontPath,
     "fontcolor=white:fontsize=56:x=(w-text_w)/2:y=h-200",
   );
+  const captionText = buildDrawtextTextfileFilter(
+    captionTextfilePath,
+    fontPath,
+    "fontcolor=white@0.82:fontsize=34:x=(w-text_w)/2:y=h-132",
+  );
 
-  return [...normalize, badgeText, dayText].join(",");
+  return [...normalize, badgeText, dayText, captionText].join(",");
 }
 
 function assertSafeVideoUrl(raw: string): string {
@@ -179,14 +218,20 @@ async function renderSingleClip(
   outputPath: string,
   day: number,
   fontPath: string,
+  captionText: string,
+  workDir: string,
+  clipIndex: number,
 ): Promise<void> {
-  const vf = buildClipVideoFilter(day, fontPath);
+  const caption = sanitizeCaptionText(captionText, day);
+  const captionFile = await writeCaptionTextFile(workDir, clipIndex, caption);
+  const vf = buildClipVideoFilter(day, fontPath, captionFile);
+
   await runFfmpeg(
     ffmpeg(inputPath)
-      .inputOptions(["-fflags", "+genpts"])
-      .setStartTime(0)
-      .setDuration(CLIP_DURATION_SEC)
+      .inputOptions(["-stream_loop", "-1", "-fflags", "+genpts"])
       .outputOptions([
+        "-t",
+        String(CLIP_DURATION_SEC),
         "-vf",
         vf,
         "-c:v",
@@ -274,7 +319,16 @@ function parseBody(json: unknown): RenderShortsBody {
     if (typeof day !== "number" || !Number.isFinite(day) || day < 1) {
       throw new Error(`clips[${index}].day must be a positive number`);
     }
-    return { videoUrl: assertSafeVideoUrl(videoUrl), day: Math.floor(day) };
+    const textRaw = row.text;
+    const text =
+      typeof textRaw === "string"
+        ? textRaw.trim().slice(0, 80)
+        : "";
+    return {
+      videoUrl: assertSafeVideoUrl(videoUrl),
+      day: Math.floor(day),
+      text,
+    };
   });
 
   return { clips, weekNumber: Math.floor(weekNumber) };
@@ -299,7 +353,15 @@ export async function POST(request: NextRequest) {
       const segPath = path.join(workDir, `seg-${i}.mp4`);
 
       await downloadClip(clip.videoUrl, rawPath);
-      await renderSingleClip(rawPath, segPath, clip.day, fontPath);
+      await renderSingleClip(
+        rawPath,
+        segPath,
+        clip.day,
+        fontPath,
+        clip.text,
+        workDir,
+        i,
+      );
       segmentPaths.push(segPath);
       await fs.unlink(rawPath).catch(() => {});
     }
