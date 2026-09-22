@@ -15,6 +15,7 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const CLIP_DURATION_SEC = 3;
+const OUTPUT_FPS = 30;
 
 type ShortsClipInput = {
   videoUrl: string;
@@ -26,6 +27,18 @@ type RenderShortsBody = {
   weekNumber: number;
 };
 
+/** Vercel Amazon Linux / Debian 등 서버리스 환경 폰트 후보 */
+const DRAWText_FONT_CANDIDATES = [
+  "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  "/usr/share/fonts/liberation-sans/LiberationSans-Bold.ttf",
+  "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+  "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+  process.platform === "win32" ? "C:/Windows/Fonts/arialbd.ttf" : null,
+  process.platform === "win32" ? "C:/Windows/Fonts/Arial Bold.ttf" : null,
+].filter((p): p is string => Boolean(p));
+
 function escapeDrawtext(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
@@ -34,39 +47,53 @@ function escapeDrawtext(text: string): string {
     .replace(/%/g, "\\%");
 }
 
-function ffmpegFontfileFilter(fontPath: string): string {
-  const normalized = fontPath.replace(/\\/g, "/").replace(/:/g, "\\:");
-  return `fontfile='${normalized}'`;
+function resolveDrawtextFontPath(): string | null {
+  return DRAWText_FONT_CANDIDATES.find((p) => existsSync(p)) ?? null;
 }
 
-async function resolveDrawtextFontPath(): Promise<string | null> {
-  const candidates = [
-    process.platform === "win32" ? "C:/Windows/Fonts/arialbd.ttf" : null,
-    process.platform === "win32" ? "C:/Windows/Fonts/Arial Bold.ttf" : null,
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-  ].filter((p): p is string => Boolean(p));
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
+/** drawtext filter용 fontfile= (경로에 공백·특수문자 최소 이스케이프) */
+function drawtextFontClause(fontPath: string | null): string {
+  if (fontPath) {
+    const normalized = fontPath.replace(/\\/g, "/");
+    const escaped = normalized.replace(/'/g, "'\\''");
+    return `fontfile='${escaped}'`;
   }
-  return null;
+  // fontfile 없음 — fontconfig 기본(DejaVu Sans 계열) 시도
+  return "font=DejaVu\\ Sans";
+}
+
+function buildDrawtextFilter(
+  text: string,
+  fontPath: string | null,
+  extras: string,
+): string {
+  const safeText = escapeDrawtext(text);
+  const fontClause = drawtextFontClause(fontPath);
+  return `drawtext=${fontClause}:text='${safeText}':${extras}`;
 }
 
 function buildClipVideoFilter(day: number, fontPath: string | null): string {
-  const badge = escapeDrawtext("2müns");
-  const dayLine = escapeDrawtext(`DAY ${day} / 66`);
-  const fontOpt = fontPath ? `${ffmpegFontfileFilter(fontPath)}:` : "";
-
-  const badgeText = `drawtext=${fontOpt}text='${badge}':fontcolor=0x00FF87:fontsize=34:x=48:y=72:box=1:boxcolor=black@0.45:boxborderw=14`;
-  const dayText = `drawtext=${fontOpt}text='${dayLine}':fontcolor=white:fontsize=56:x=(w-text_w)/2:y=h-200`;
-
-  return [
+  const badgeLabel = fontPath ? "2müns" : "2muns";
+  const normalize = [
+    `fps=${OUTPUT_FPS}`,
+    "format=yuv420p",
+    "setsar=1",
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
     `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
-    badgeText,
-    dayText,
-  ].join(",");
+  ];
+
+  const badgeText = buildDrawtextFilter(
+    badgeLabel,
+    fontPath,
+    "fontcolor=0x00FF87:fontsize=34:x=48:y=72:box=1:boxcolor=black@0.45:boxborderw=14",
+  );
+  const dayText = buildDrawtextFilter(
+    `DAY ${day} / 66`,
+    fontPath,
+    "fontcolor=white:fontsize=56:x=(w-text_w)/2:y=h-200",
+  );
+
+  return [...normalize, badgeText, dayText].join(",");
 }
 
 function assertSafeVideoUrl(raw: string): string {
@@ -94,9 +121,23 @@ async function downloadClip(url: string, destPath: string): Promise<void> {
   await fs.writeFile(destPath, bytes);
 }
 
-function runFfmpeg(command: ffmpeg.FfmpegCommand): Promise<void> {
+function runFfmpeg(command: ffmpeg.FfmpegCommand, label: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    command.on("end", () => resolve()).on("error", (err) => reject(err)).run();
+    command
+      .on("start", (cmdLine) => {
+        console.info(`[render-shorts] ffmpeg ${label}:`, cmdLine);
+      })
+      .on("stderr", (line) => {
+        if (line.toLowerCase().includes("error")) {
+          console.warn(`[render-shorts] ffmpeg ${label} stderr:`, line);
+        }
+      })
+      .on("end", () => resolve())
+      .on("error", (err, _stdout, stderr) => {
+        const detail = stderr?.trim() || err.message;
+        reject(new Error(`${label} failed: ${detail}`));
+      })
+      .run();
   });
 }
 
@@ -109,6 +150,7 @@ async function renderSingleClip(
   const vf = buildClipVideoFilter(day, fontPath);
   await runFfmpeg(
     ffmpeg(inputPath)
+      .inputOptions(["-fflags", "+genpts"])
       .setStartTime(0)
       .setDuration(CLIP_DURATION_SEC)
       .outputOptions([
@@ -122,11 +164,16 @@ async function renderSingleClip(
         "22",
         "-pix_fmt",
         "yuv420p",
+        "-r",
+        String(OUTPUT_FPS),
+        "-vsync",
+        "cfr",
         "-an",
         "-movflags",
         "+faststart",
       ])
       .output(outputPath),
+    `clip-day-${day}`,
   );
 }
 
@@ -146,13 +193,26 @@ async function concatClips(segmentPaths: string[], outputPath: string): Promise<
         .input(listPath)
         .inputOptions(["-f", "concat", "-safe", "0"])
         .outputOptions([
-          "-c",
-          "copy",
+          "-vf",
+          `fps=${OUTPUT_FPS},setsar=1,format=yuv420p`,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          "22",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          String(OUTPUT_FPS),
+          "-vsync",
+          "cfr",
           "-movflags",
           "+faststart",
           "-an",
         ])
         .output(outputPath),
+      "concat",
     );
   } finally {
     await fs.unlink(listPath).catch(() => {});
@@ -204,7 +264,12 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = parseBody(await request.json());
-    const fontPath = await resolveDrawtextFontPath();
+    const fontPath = resolveDrawtextFontPath();
+    console.info(
+      "[render-shorts] drawtext font:",
+      fontPath ?? "fontconfig fallback (DejaVu Sans)",
+    );
+
     workDir = path.join(os.tmpdir(), `2muns-shorts-${randomUUID()}`);
     await fs.mkdir(workDir, { recursive: true });
 
