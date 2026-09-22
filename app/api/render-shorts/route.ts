@@ -140,13 +140,14 @@ function buildClipVideoFilter(
   fontPath: string,
   captionTextfilePath: string,
 ): string {
-  const badgeX = 48;
-  const badgeY = 72;
+  const badgeX = 60;
+  const badgeY = 70;
   const badgeW = 220;
-  const badgeH = 58;
-  const badgeTextX = badgeX + 22;
-  const badgeTextY = badgeY + 14 + 34;
-  const badgeTwoWidthPx = 21;
+  const badgeH = 70;
+  const logo2X = 80;
+  const logo2Y = 86;
+  const logoMunsX = 112;
+  const logoFontSize = 46;
 
   const normalize = [
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
@@ -163,12 +164,12 @@ function buildClipVideoFilter(
   const badgeTwo = buildDrawtextFilter(
     "2",
     fontPath,
-    `fontcolor=white:fontsize=34:x=${badgeTextX}:y=${badgeTextY}`,
+    `fontcolor=white:fontsize=${logoFontSize}:x=${logo2X}:y=${logo2Y}`,
   );
   const badgeMuns = buildDrawtextFilter(
     "müns",
     fontPath,
-    `fontcolor=0x00FF87:fontsize=34:x=${badgeTextX + badgeTwoWidthPx}:y=${badgeTextY}`,
+    `fontcolor=0x00FF87:fontsize=${logoFontSize}:x=${logoMunsX}:y=${logo2Y}`,
   );
   const dayText = buildDrawtextFilter(
     `DAY ${day} / 66`,
@@ -274,33 +275,50 @@ async function renderSingleClip(
 }
 
 async function concatClips(segmentPaths: string[], outputPath: string): Promise<void> {
-  const listPath = path.join(path.dirname(outputPath), `concat-${randomUUID()}.txt`);
-  const listBody = segmentPaths
-    .map((p) => {
-      const escaped = p.replace(/'/g, "'\\''");
-      return `file '${escaped}'`;
-    })
-    .join("\n");
-  await fs.writeFile(listPath, listBody, "utf8");
-
-  try {
-    await runFfmpeg(
-      ffmpeg()
-        .input(listPath)
-        .inputOptions(["-f", "concat", "-safe", "0"])
-        .outputOptions([
-          "-c",
-          "copy",
-          "-movflags",
-          "+faststart",
-          "-an",
-        ])
-        .output(outputPath),
-      "concat",
-    );
-  } finally {
-    await fs.unlink(listPath).catch(() => {});
+  const n = segmentPaths.length;
+  const command = ffmpeg();
+  for (const segPath of segmentPaths) {
+    command.input(segPath);
   }
+
+  const perInput = segmentPaths
+    .map(
+      (_, i) =>
+        `[${i}:v]setpts=PTS-STARTPTS,fps=${OUTPUT_FPS},format=yuv420p,trim=duration=${CLIP_DURATION_SEC},setpts=PTS-STARTPTS[v${i}]`,
+    )
+    .join(";");
+  const concatInputs = segmentPaths.map((_, i) => `[v${i}]`).join("");
+  const filterComplex = `${perInput};${concatInputs}concat=n=${n}:v=1:a=0[vout];[vout]setpts=PTS-STARTPTS,fps=${OUTPUT_FPS}[outv]`;
+
+  await runFfmpeg(
+    command
+      .complexFilter(filterComplex)
+      .outputOptions([
+        "-map",
+        "[outv]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        String(OUTPUT_FPS),
+        "-vsync",
+        "cfr",
+        "-reset_timestamps",
+        "1",
+        "-avoid_negative_ts",
+        "make_zero",
+        "-movflags",
+        "+faststart",
+        "-an",
+      ])
+      .output(outputPath),
+    "concat",
+  );
 }
 
 async function removeWorkDir(workDir: string): Promise<void> {
