@@ -39,6 +39,51 @@ const DRAWText_FONT_CANDIDATES = [
   process.platform === "win32" ? "C:/Windows/Fonts/Arial Bold.ttf" : null,
 ].filter((p): p is string => Boolean(p));
 
+const BUNDLED_FONT_URLS = [
+  "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Bold.ttf",
+  "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf",
+];
+
+function cachedBundledFontPath(): string {
+  return path.join(os.tmpdir(), "2muns-render-font.ttf");
+}
+
+/** Vercel: fontconfig 없음 → TTF 절대경로(fontfile) 필수 */
+async function ensureDrawtextFontFile(): Promise<string> {
+  const systemFont = DRAWText_FONT_CANDIDATES.find((p) => existsSync(p));
+  if (systemFont) return systemFont;
+
+  const fontPath = cachedBundledFontPath();
+  if (existsSync(fontPath)) {
+    const stat = await fs.stat(fontPath);
+    if (stat.size > 10_000) return fontPath;
+  }
+
+  let lastError = "unknown";
+  for (const fontUrl of BUNDLED_FONT_URLS) {
+    try {
+      const fontRes = await fetch(fontUrl, { cache: "no-store" });
+      if (!fontRes.ok) {
+        lastError = `HTTP ${fontRes.status} (${fontUrl})`;
+        continue;
+      }
+      const buffer = Buffer.from(await fontRes.arrayBuffer());
+      if (buffer.length < 10_000) {
+        lastError = `font too small (${buffer.length}B)`;
+        continue;
+      }
+      const partPath = `${fontPath}.${randomUUID()}.part`;
+      await fs.writeFile(partPath, buffer);
+      await fs.rename(partPath, fontPath);
+      return fontPath;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  throw new Error(`drawtext font download failed: ${lastError}`);
+}
+
 function escapeDrawtext(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
@@ -47,33 +92,21 @@ function escapeDrawtext(text: string): string {
     .replace(/%/g, "\\%");
 }
 
-function resolveDrawtextFontPath(): string | null {
-  return DRAWText_FONT_CANDIDATES.find((p) => existsSync(p)) ?? null;
+/** drawtext — fontfile 절대경로만 사용 (font= 이름 금지) */
+function drawtextFontClause(fontPath: string): string {
+  const normalized = path.resolve(fontPath).replace(/\\/g, "/");
+  const escaped = normalized.replace(/'/g, "'\\''");
+  return `fontfile='${escaped}'`;
 }
 
-/** drawtext filter용 fontfile= (경로에 공백·특수문자 최소 이스케이프) */
-function drawtextFontClause(fontPath: string | null): string {
-  if (fontPath) {
-    const normalized = fontPath.replace(/\\/g, "/");
-    const escaped = normalized.replace(/'/g, "'\\''");
-    return `fontfile='${escaped}'`;
-  }
-  // fontfile 없음 — fontconfig 기본(DejaVu Sans 계열) 시도
-  return "font=DejaVu\\ Sans";
-}
-
-function buildDrawtextFilter(
-  text: string,
-  fontPath: string | null,
-  extras: string,
-): string {
+function buildDrawtextFilter(text: string, fontPath: string, extras: string): string {
   const safeText = escapeDrawtext(text);
   const fontClause = drawtextFontClause(fontPath);
   return `drawtext=${fontClause}:text='${safeText}':${extras}`;
 }
 
-function buildClipVideoFilter(day: number, fontPath: string | null): string {
-  const badgeLabel = fontPath ? "2müns" : "2muns";
+function buildClipVideoFilter(day: number, fontPath: string): string {
+  const badgeLabel = "2muns";
   const normalize = [
     `fps=${OUTPUT_FPS}`,
     "format=yuv420p",
@@ -145,7 +178,7 @@ async function renderSingleClip(
   inputPath: string,
   outputPath: string,
   day: number,
-  fontPath: string | null,
+  fontPath: string,
 ): Promise<void> {
   const vf = buildClipVideoFilter(day, fontPath);
   await runFfmpeg(
@@ -264,11 +297,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = parseBody(await request.json());
-    const fontPath = resolveDrawtextFontPath();
-    console.info(
-      "[render-shorts] drawtext font:",
-      fontPath ?? "fontconfig fallback (DejaVu Sans)",
-    );
+    const fontPath = await ensureDrawtextFontFile();
+    console.info("[render-shorts] drawtext fontfile:", fontPath);
 
     workDir = path.join(os.tmpdir(), `2muns-shorts-${randomUUID()}`);
     await fs.mkdir(workDir, { recursive: true });
