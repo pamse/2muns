@@ -245,7 +245,7 @@ async function renderSingleClip(
 
   await runFfmpeg(
     ffmpeg(inputPath)
-      .inputOptions(["-fflags", "+genpts"])
+      .inputOptions(["-stream_loop", "-1", "-fflags", "+genpts"])
       .outputOptions([
         "-vf",
         vf,
@@ -261,6 +261,8 @@ async function renderSingleClip(
         String(OUTPUT_FPS),
         "-vsync",
         "cfr",
+        "-t",
+        String(CLIP_DURATION_SEC),
         "-frames:v",
         String(CLIP_DURATION_SEC * OUTPUT_FPS),
         "-reset_timestamps",
