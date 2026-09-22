@@ -153,10 +153,10 @@ function buildClipVideoFilter(
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
     `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
     "setsar=1",
-    `tpad=stop_mode=clone:stop_duration=${CLIP_DURATION_SEC}`,
+    `fps=${OUTPUT_FPS}`,
+    "loop=loop=-1:size=300:start=0",
     `trim=duration=${CLIP_DURATION_SEC}`,
     "setpts=PTS-STARTPTS",
-    `fps=${OUTPUT_FPS}`,
     "format=yuv420p",
   ];
 
