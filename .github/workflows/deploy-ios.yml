@@ -1,0 +1,62 @@
+name: Build & Upload to TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "ios/**"
+      - "capacitor.config.ts"
+      - ".github/workflows/deploy-ios.yml"
+
+jobs:
+  build-and-upload:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ios/App
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
+        working-directory: .
+        run: npm ci
+
+      - name: Sync Capacitor iOS
+        working-directory: .
+        run: npx cap sync ios
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: true
+          working-directory: ios/App
+
+      - name: Setup App Store Connect Private Key
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
+          PRIVATE_KEY: ${{ secrets.APP_STORE_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          printf '%s\n' "$PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+
+      - name: Fastlane Build & Upload to TestFlight
+        env:
+          APP_STORE_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
+          APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: bundle exec fastlane beta

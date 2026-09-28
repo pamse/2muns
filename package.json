@@ -7,9 +7,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "generate:pwa-icons": "node scripts/generate-pwa-icons.mjs"
+    "generate:pwa-icons": "node scripts/generate-pwa-icons.mjs",
+    "cap:sync": "cap sync",
+    "cap:sync:ios": "cap sync ios"
   },
   "dependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/ios": "^8.5.2",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.116.0",
