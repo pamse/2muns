@@ -73,6 +73,7 @@ jobs:
             -destination "generic/platform=iOS" \
             -archivePath build/App.xcarchive \
             -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="${TEAM_ID}" \
             -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8" \
             -authenticationKeyID "${KEY_ID}" \
             -authenticationKeyIssuerID "${ISSUER_ID}"
