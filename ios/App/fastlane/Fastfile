@@ -6,6 +6,9 @@ platform :ios do
     key_path = Dir.glob("#{Dir.home}/.appstoreconnect/private_keys/AuthKey_*.p8").first
     UI.user_error!("App Store Connect API key (.p8) not found") unless key_path
 
+    team_id = ENV["APPLE_TEAM_ID"]
+    UI.user_error!("APPLE_TEAM_ID secret is required") if team_id.to_s.empty?
+
     api_key = app_store_connect_api_key(
       key_id: ENV["APP_STORE_KEY_ID"],
       issuer_id: ENV["APP_STORE_ISSUER_ID"],
@@ -13,13 +16,24 @@ platform :ios do
       in_house: false,
     )
 
-    team_id = ENV["APPLE_TEAM_ID"]
-    UI.user_error!("APPLE_TEAM_ID secret is required") if team_id.to_s.empty?
+    keychain_name = "ci_keychain"
+    keychain_password = "ci_password_123"
+    create_keychain(
+      name: keychain_name,
+      password: keychain_password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 3600,
+    )
 
-    update_code_signing_settings(
-      use_automatic_signing: true,
-      team_id: team_id,
-      path: "App.xcodeproj",
+    get_certificates(
+      api_key: api_key,
+      keychain_name: keychain_name,
+      keychain_password: keychain_password,
+    )
+    get_provisioning_profile(
+      api_key: api_key,
+      app_identifier: "com.twomuns.app",
     )
 
     increment_build_number(
@@ -27,12 +41,27 @@ platform :ios do
       xcodeproj: "App.xcodeproj",
     )
 
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: "App.xcodeproj",
+      team_id: team_id,
+      bundle_identifier: "com.twomuns.app",
+      profile_name: ENV["SIGH_PROFILE_NAME"],
+      code_sign_identity: "Apple Distribution",
+      targets: ["App"],
+    )
+
     build_app(
       project: "App.xcodeproj",
       scheme: "App",
       export_method: "app-store",
       clean: true,
-      xcargs: "-allowProvisioningUpdates",
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: {
+          "com.twomuns.app" => ENV["SIGH_PROFILE_NAME"],
+        },
+      },
     )
 
     upload_to_testflight(
