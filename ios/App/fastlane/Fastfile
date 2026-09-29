@@ -32,6 +32,7 @@ platform :ios do
       scheme: "App",
       export_method: "app-store",
       clean: true,
+      xcargs: "-allowProvisioningUpdates",
     )
 
     upload_to_testflight(
