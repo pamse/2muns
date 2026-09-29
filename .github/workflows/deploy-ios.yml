@@ -13,14 +13,6 @@ on:
 jobs:
   build-and-upload:
     runs-on: macos-14
-    env:
-      APP_STORE_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
-      APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      GITHUB_RUN_NUMBER: ${{ github.run_number }}
-    defaults:
-      run:
-        working-directory: ios/App
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -32,24 +24,15 @@ jobs:
           cache: npm
 
       - name: Install Dependencies
-        working-directory: .
         run: npm ci
 
       - name: Sync Capacitor iOS
-        working-directory: .
         run: npx cap sync ios
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.2"
-          bundler-cache: true
-          working-directory: ios/App
-
-      - name: Setup App Store Connect Private Key
+      - name: Setup App Store Connect API Key
         env:
           KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
           PRIVATE_KEY: ${{ secrets.APP_STORE_PRIVATE_KEY }}
@@ -58,20 +41,58 @@ jobs:
           printf '%s\n' "$PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
 
-      - name: Verify signing secrets
+      - name: Update Build Number
         run: |
-          missing=""
-          [ -z "$APPLE_TEAM_ID" ] && missing="$missing APPLE_TEAM_ID"
-          [ -z "$APP_STORE_KEY_ID" ] && missing="$missing APP_STORE_KEY_ID"
-          [ -z "$APP_STORE_ISSUER_ID" ] && missing="$missing APP_STORE_ISSUER_ID"
-          if [ -n "$missing" ]; then
-            echo "::error::Repository secrets not set:$missing — Settings → Secrets and variables → Actions"
-            exit 1
-          fi
+          cd ios/App
+          xcrun agvtool new-version -all "${{ github.run_number }}"
 
-      - name: Fastlane Build & Upload to TestFlight
+      - name: Archive and Export IPA
         env:
-          APP_STORE_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
-          APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: bundle exec fastlane beta
+          KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cd ios/App
+          mkdir -p build
+
+          python3 -c "
+          import os, plistlib
+          plist = {
+              'method': 'app-store',
+              'teamID': os.environ['TEAM_ID'],
+              'signingStyle': 'automatic',
+              'uploadSymbols': True,
+          }
+          with open('ExportOptions.plist', 'wb') as f:
+              plistlib.dump(plist, f)
+          "
+
+          xcodebuild archive \
+            -project App.xcodeproj \
+            -scheme App \
+            -destination "generic/platform=iOS" \
+            -archivePath build/App.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "${KEY_ID}" \
+            -authenticationKeyIssuerID "${ISSUER_ID}"
+
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/out \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "${KEY_ID}" \
+            -authenticationKeyIssuerID "${ISSUER_ID}"
+
+      - name: Upload IPA to App Store Connect / TestFlight
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app \
+            -t ios \
+            -f ios/App/build/out/App.ipa \
+            --apiKey "$KEY_ID" \
+            --apiIssuer "$ISSUER_ID"
