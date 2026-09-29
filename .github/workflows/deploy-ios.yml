@@ -13,6 +13,11 @@ on:
 jobs:
   build-and-upload:
     runs-on: macos-14
+    env:
+      APP_STORE_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
+      APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      GITHUB_RUN_NUMBER: ${{ github.run_number }}
     defaults:
       run:
         working-directory: ios/App
@@ -53,10 +58,20 @@ jobs:
           printf '%s\n' "$PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
 
+      - name: Verify signing secrets
+        run: |
+          missing=""
+          [ -z "$APPLE_TEAM_ID" ] && missing="$missing APPLE_TEAM_ID"
+          [ -z "$APP_STORE_KEY_ID" ] && missing="$missing APP_STORE_KEY_ID"
+          [ -z "$APP_STORE_ISSUER_ID" ] && missing="$missing APP_STORE_ISSUER_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Repository secrets not set:$missing — Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+
       - name: Fastlane Build & Upload to TestFlight
         env:
           APP_STORE_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
           APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: bundle exec fastlane beta
