@@ -18,7 +18,7 @@ platform :ios do
 
     keychain_name = "ci_keychain"
     keychain_password = "ci_password_123"
-    create_keychain(
+    keychain_path = create_keychain(
       name: keychain_name,
       password: keychain_password,
       default_keychain: true,
@@ -28,7 +28,7 @@ platform :ios do
 
     get_certificates(
       api_key: api_key,
-      keychain_name: keychain_name,
+      keychain_path: keychain_path,
       keychain_password: keychain_password,
     )
     get_provisioning_profile(
