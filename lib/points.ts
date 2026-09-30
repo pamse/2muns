@@ -135,6 +135,9 @@ export function getEffectiveMaxJoinedGroups(snapshot: UserPointsSnapshot) {
 }
 
 async function syncSnapshotToSupabase(userId: string, snapshot: UserPointsSnapshot) {
+  const trimmedId = userId?.trim();
+  if (!trimmedId || !AUTH_USER_ID_RE.test(trimmedId)) return;
+
   try {
     const { error } = await supabase
       .from("users")
@@ -142,50 +145,34 @@ async function syncSnapshotToSupabase(userId: string, snapshot: UserPointsSnapsh
         points: snapshot.points,
         extra_group_slots: snapshot.extraGroupSlots,
       })
-      .eq("id", userId);
+      .eq("id", trimmedId);
     if (error) return;
 
-    for (const [groupId, bonus] of Object.entries(snapshot.heartBonusByGroup)) {
-      if (!bonus) continue;
-      await supabase.from("user_group_bonuses").upsert(
-        {
-          user_id: userId,
-          group_id: groupId,
-          heart_bonus: bonus,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id,group_id" },
-      );
-    }
+    // user_group_bonuses 테이블 미배포 환경 — 하트 보너스는 localStorage만 사용
   } catch {
     // Supabase 미적용 환경 — localStorage만 사용
   }
 }
 
+const AUTH_USER_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 async function loadFromSupabase(userId: string): Promise<Partial<UserPointsSnapshot> | null> {
+  const trimmedId = userId?.trim();
+  if (!trimmedId || !AUTH_USER_ID_RE.test(trimmedId)) return null;
+
   try {
     const { data: userRow, error: userError } = await supabase
       .from("users")
       .select("points, extra_group_slots")
-      .eq("id", userId)
+      .eq("id", trimmedId)
       .maybeSingle();
     if (userError || !userRow) return null;
-
-    const { data: bonusRows } = await supabase
-      .from("user_group_bonuses")
-      .select("group_id, heart_bonus")
-      .eq("user_id", userId);
-
-    const heartBonusByGroup: Record<string, number> = {};
-    for (const row of bonusRows ?? []) {
-      const gid = normalizeGroupId(row.group_id);
-      if (gid && row.heart_bonus) heartBonusByGroup[gid] = row.heart_bonus;
-    }
 
     return {
       points: userRow.points ?? 0,
       extraGroupSlots: userRow.extra_group_slots ? 1 : 0,
-      heartBonusByGroup,
+      heartBonusByGroup: {},
     };
   } catch {
     return null;
@@ -217,6 +204,9 @@ export async function fetchUserPointsSnapshot(userId: string): Promise<UserPoint
     };
     writeLocal(userId, merged);
     return merged;
+  }
+  if (local && !remote) {
+    return local;
   }
   return local ?? defaultSnapshot();
 }

@@ -221,30 +221,55 @@ function CompletedHabitsAccordion({ items }: { items: CompletedHabitRecord[] }) 
 
 function MyPageStatsBlock({
   completedHabits,
-  points,
-  rank,
+  displayPoints,
+  displayRank,
   onOpenShop,
 }: {
   completedHabits: CompletedHabitRecord[];
-  points: number;
-  rank: number | null;
+  displayPoints: number;
+  displayRank: string;
   onOpenShop: () => void;
 }) {
   return (
     <>
       <CompletedHabitsAccordion items={completedHabits} />
-      <PointsRankingSummary points={points} rank={rank} onOpenShop={onOpenShop} />
+      <PointsRankingSummary
+        displayPoints={displayPoints}
+        displayRank={displayRank}
+        onOpenShop={onOpenShop}
+      />
     </>
   );
 }
 
+type RankingRowLike = RankUser & {
+  isMe?: boolean;
+  id?: string;
+  user_id?: string;
+};
+
+/** 하단 TOP 5 `· 나` / 초록 하이라이트와 상단 카드 — 동일 판별 */
+function isMyRankingItem(
+  item: RankingRowLike,
+  currentUserId: string | null | undefined,
+): boolean {
+  const uid = currentUserId?.trim();
+  return (
+    item.isMe === true ||
+    item.me === true ||
+    (uid != null &&
+      uid.length > 0 &&
+      (item.id === uid || item.user_id === uid || item.userId === uid))
+  );
+}
+
 function PointsRankingSummary({
-  points,
-  rank,
+  displayPoints,
+  displayRank,
   onOpenShop,
 }: {
-  points: number;
-  rank: number | null;
+  displayPoints: number;
+  displayRank: string;
   onOpenShop: () => void;
 }) {
   return (
@@ -256,7 +281,7 @@ function PointsRankingSummary({
           <span className="text-xs">획득 포인트</span>
         </div>
         <p className="text-2xl font-extrabold text-white">
-          {points.toLocaleString()}
+          {displayPoints.toLocaleString()}
           <span className="ml-1 text-sm font-medium text-gray-500">P</span>
         </p>
       </Card>
@@ -265,16 +290,7 @@ function PointsRankingSummary({
           <Trophy size={15} className="text-[#00FF87]" />
           <span className="text-xs">실시간 랭킹</span>
         </div>
-        <p className="text-2xl font-extrabold text-white">
-          {rank != null ? (
-            <>
-              {rank}
-              <span className="ml-0.5 text-sm font-medium text-gray-500">위</span>
-            </>
-          ) : (
-            "-"
-          )}
-        </p>
+        <p className="text-2xl font-extrabold text-white">{displayRank}</p>
       </Card>
       </div>
       <button
@@ -737,7 +753,8 @@ export function MyTab({
   const [liveRanking, setLiveRanking] = useState<{
     topFive: RankUser[];
     rank: number | null;
-  }>({ topFive: [], rank: null });
+    myPoints: number;
+  }>({ topFive: [], rank: null, myPoints: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const [heartState, setHeartState] = useState<MemberHeartState | null>(null);
   const [showSosModal, setShowSosModal] = useState(false);
@@ -830,6 +847,11 @@ export function MyTab({
 
   const loadRanking = useCallback(
     async (points = userPoints) => {
+      if (!myUserId?.trim()) {
+        const empty = { topFive: [], rank: null, myPoints: 0 };
+        setLiveRanking(empty);
+        return empty;
+      }
       const next = await fetchLiveRanking({
         userId: myUserId,
         points,
@@ -843,6 +865,14 @@ export function MyTab({
   useEffect(() => {
     void loadRanking();
   }, [loadRanking]);
+
+  useEffect(() => {
+    const meInTop = liveRanking.topFive.some((item) =>
+      isMyRankingItem(item, myUserId),
+    );
+    if (meInTop || liveRanking.myPoints <= userPoints) return;
+    void onRefreshPoints?.();
+  }, [liveRanking.myPoints, liveRanking.topFive, myUserId, onRefreshPoints, userPoints]);
 
   useEffect(() => {
     if (!myUserId) return;
@@ -900,13 +930,17 @@ export function MyTab({
     userPoints,
   ]);
 
-  const myStats = useMemo(
-    () => ({
-      points: userPoints,
-      rank: userPoints <= 0 ? null : liveRanking.rank,
-    }),
-    [userPoints, liveRanking.rank],
-  );
+  const displayPoints = useMemo(() => {
+    const entry = liveRanking.topFive.find((item) => isMyRankingItem(item, myUserId));
+    return entry?.points ?? liveRanking.myPoints ?? userPoints ?? 0;
+  }, [liveRanking, myUserId, userPoints]);
+
+  const displayRank = useMemo(() => {
+    const entry = liveRanking.topFive.find((item) => isMyRankingItem(item, myUserId));
+    if (entry?.rank) return `${entry.rank}위`;
+    if (liveRanking.rank && liveRanking.rank > 0) return `${liveRanking.rank}위`;
+    return "-";
+  }, [liveRanking, myUserId]);
   const selectedHeartBonus = selected
     ? heartBonusByGroup[normalizeGroupId(selected.id)] ?? 0
     : 0;
@@ -1329,8 +1363,8 @@ export function MyTab({
           />
           <MyPageStatsBlock
             completedHabits={completedHabits}
-            points={myStats.points}
-            rank={myStats.rank}
+            displayPoints={displayPoints}
+            displayRank={displayRank}
             onOpenShop={() => setShowPointShop(true)}
           />
           <section>
@@ -1373,8 +1407,8 @@ export function MyTab({
           </Card>
           <MyPageStatsBlock
             completedHabits={completedHabits}
-            points={myStats.points}
-            rank={myStats.rank}
+            displayPoints={displayPoints}
+            displayRank={displayRank}
             onOpenShop={() => setShowPointShop(true)}
           />
         </>
@@ -1394,8 +1428,8 @@ export function MyTab({
           </Card>
           <MyPageStatsBlock
             completedHabits={completedHabits}
-            points={myStats.points}
-            rank={myStats.rank}
+            displayPoints={displayPoints}
+            displayRank={displayRank}
             onOpenShop={() => setShowPointShop(true)}
           />
         </>
@@ -1403,7 +1437,7 @@ export function MyTab({
 
       <PointShopModal
         open={showPointShop}
-        points={myStats.points}
+        points={displayPoints}
         livesLeft={livesLeft}
         hasSlotExpansion={extraGroupSlots > 0}
         purchasing={purchasing}
@@ -1427,7 +1461,7 @@ export function MyTab({
               <div
                 key={u.userId}
                 className={`flex items-center gap-3 rounded-xl p-3 ${
-                  u.me ? "bg-[#00FF87]/10" : ""
+                  isMyRankingItem(u, myUserId) ? "bg-[#00FF87]/10" : ""
                 }`}
               >
                 <span className="w-6 text-center text-sm font-bold">
@@ -1449,16 +1483,22 @@ export function MyTab({
                 <Avatar
                   name={u.name}
                   color={u.color}
-                  src={u.me ? myProfileImage ?? undefined : u.avatarUrl || undefined}
+                  src={
+                    isMyRankingItem(u, myUserId)
+                      ? myProfileImage ?? undefined
+                      : u.avatarUrl || undefined
+                  }
                   size={36}
                 />
                 <span
                   className={`flex-1 text-sm font-semibold ${
-                    u.me ? "text-[#00FF87]" : "text-white"
+                    isMyRankingItem(u, myUserId) ? "text-[#00FF87]" : "text-white"
                   }`}
                 >
                   {u.name}
-                  {u.me ? <span className="ml-1 text-[11px] text-gray-400">· 나</span> : null}
+                  {isMyRankingItem(u, myUserId) ? (
+                    <span className="ml-1 text-[11px] text-gray-400">· 나</span>
+                  ) : null}
                 </span>
                 <span className="text-sm font-bold text-gray-300">
                   {u.points.toLocaleString()}

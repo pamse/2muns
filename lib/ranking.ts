@@ -39,6 +39,24 @@ function normalizePoints(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const AUTH_USER_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isValidAuthUserId(userId: string | null | undefined): userId is string {
+  const trimmed = userId?.trim();
+  return Boolean(trimmed && AUTH_USER_ID_RE.test(trimmed));
+}
+
+function findMeInTopFive(topFive: RankUser[], currentUserId?: string | null) {
+  if (!topFive.length) return undefined;
+  const uid = currentUserId?.trim();
+  return topFive.find(
+    (row) =>
+      row.me === true ||
+      (uid != null && uid.length > 0 && row.userId === uid),
+  );
+}
+
 function normalizeRankingRow(row: RankingUserRow): RankingUserRow {
   return {
     ...row,
@@ -68,7 +86,7 @@ async function ensureCurrentUserPointsVisible(
   userId: string | null | undefined,
   points: number,
 ) {
-  if (!userId || points <= 0) return;
+  if (!isValidAuthUserId(userId) || points <= 0) return;
 
   const { error } = await supabase
     .from("users")
@@ -96,8 +114,6 @@ export async function fetchTopRankedUsers(
     return [];
   }
 
-  console.log("fetchTopRankedUsers data loaded:", data);
-
   const rows = (data ?? [])
     .map((row) => normalizeRankingRow(row as RankingUserRow))
     .filter((row) => row.points > 0);
@@ -123,16 +139,57 @@ export async function fetchMyRank(points: number): Promise<number | null> {
   return (count ?? 0) + 1;
 }
 
+async function fetchUserPointsFromDb(userId: string): Promise<number | null> {
+  if (!isValidAuthUserId(userId)) return null;
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("points")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("fetchUserPointsFromDb query error:", error);
+    return null;
+  }
+  if (!data) return null;
+  return normalizePoints(data.points);
+}
+
 export async function fetchLiveRanking(options: {
   userId?: string | null;
-  points: number;
+  /** localStorage 등 클라이언트 캐시 — DB 값과 max 로 보정 */
+  points?: number;
 }) {
-  await ensureCurrentUserPointsVisible(options.userId, options.points);
+  const userId = isValidAuthUserId(options.userId) ? options.userId.trim() : null;
+  const cachedPoints = normalizePoints(options.points);
 
-  const [topFive, rank] = await Promise.all([
-    fetchTopRankedUsers(options.userId),
-    fetchMyRank(options.points),
-  ]);
+  const topFive = await fetchTopRankedUsers(userId);
+  const meInTop = findMeInTopFive(topFive, userId);
 
-  return { topFive, rank };
+  if (meInTop) {
+    return {
+      topFive,
+      rank: meInTop.rank,
+      myPoints: meInTop.points,
+    };
+  }
+
+  let resolvedPoints = cachedPoints;
+  let fetchedRank: number | null = null;
+
+  if (userId) {
+    const dbPoints = await fetchUserPointsFromDb(userId);
+    if (dbPoints != null) {
+      resolvedPoints = Math.max(cachedPoints, dbPoints);
+    }
+    await ensureCurrentUserPointsVisible(userId, resolvedPoints);
+    fetchedRank = await fetchMyRank(resolvedPoints);
+  }
+
+  return {
+    topFive,
+    rank: fetchedRank,
+    myPoints: resolvedPoints,
+  };
 }
