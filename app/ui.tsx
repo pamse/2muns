@@ -245,7 +245,7 @@ export function Pill({
   className = "",
 }: {
   children: ReactNode;
-  tone?: "accent" | "muted" | "warn" | "danger";
+  tone?: "accent" | "muted" | "warn" | "danger" | "success";
   className?: string;
 }) {
   const tones: Record<string, string> = {
@@ -253,6 +253,7 @@ export function Pill({
     muted: "bg-white/5 text-gray-300 border-gray-700",
     warn: "bg-amber-400/15 text-amber-300 border-amber-400/30",
     danger: "bg-red-500/15 text-red-300 border-red-500/30",
+    success: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
   };
   return (
     <span

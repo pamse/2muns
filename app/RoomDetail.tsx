@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { ATTENDANCE_LIVES } from "./AttendanceStrip";
 import { CameraVerifyModal } from "./CameraVerifyModal";
+import { MunsyCompletionModal } from "./MunsyCompletionModal";
 import {
   getGroupOwnerId,
   hasRaceStarted,
@@ -29,7 +30,19 @@ import {
   type Group,
   type Member,
 } from "./data";
-import { fetchAppGroupById, challengeDayFromStart, isStartedGroupStatus, removeGroupMember, startGroupRace } from "@/lib/groups";
+import {
+  fetchAppGroupById,
+  challengeDayFromStart,
+  isStartedGroupStatus,
+  markGroupCompletedIfEligible,
+  removeGroupMember,
+  startGroupRace,
+} from "@/lib/groups";
+import {
+  markCompletionCelebrationSeen,
+  shouldCelebrateChallengeCompletion,
+} from "@/lib/challengeCompletion";
+import { fetchMemberHeartState, isGoldCompletionBadge } from "@/lib/challengeHearts";
 import { supabase } from "@/lib/supabase";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { Notice, Verification } from "@/lib/database.types";
@@ -64,10 +77,12 @@ import {
   type ReportReason,
 } from "@/lib/moderation";
 import {
+  awardCompletionPoints,
   awardDailyVerificationPoints,
   awardEmojiFeedbackPoints,
   type PointAwardResult,
 } from "@/lib/points";
+import { ChallengeRunningBadge } from "./ChallengeRunningBadge";
 import { Avatar, GroupThumb, Pill, StackedAvatars } from "./ui";
 import { groupThumbnailSrc } from "@/lib/categories";
 
@@ -1035,6 +1050,8 @@ export function RoomDetail({
   const [reportOpen, setReportOpen] = useState(false);
   const [modBusy, setModBusy] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [completionGoldBadge, setCompletionGoldBadge] = useState(true);
   const displayGroup = useMemo(
     () => filterGroupMembers(group, blockedUserIds),
     [group, blockedUserIds],
@@ -1083,22 +1100,88 @@ export function RoomDetail({
   const started = hasRaceStarted(group) || forcedStarted;
   const owner = isGroupOwner(group, userId);
   const isMember = owner || isGroupMember(group, { userId, nickname });
+  const groupRef = useRef(group);
+  const onGroupUpdateRef = useRef(onGroupUpdate);
+  const onPointsEarnedRef = useRef(onPointsEarned);
+  groupRef.current = group;
+  onGroupUpdateRef.current = onGroupUpdate;
+  onPointsEarnedRef.current = onPointsEarned;
+
+  const openCompletionCelebration = useCallback(
+    async (options?: { skipStatusUpdate?: boolean }) => {
+      if (!userId) return;
+      try {
+        const heart = await fetchMemberHeartState(group.id, userId);
+        setCompletionGoldBadge(isGoldCompletionBadge(heart));
+      } catch {
+        setCompletionGoldBadge(true);
+      }
+
+      if (!options?.skipStatusUpdate) {
+        await markGroupCompletedIfEligible(group.id);
+        onGroupUpdateRef.current?.({
+          ...groupRef.current,
+          dbStatus: "completed",
+        });
+      }
+
+      const award = await awardCompletionPoints(userId, group.id);
+      if (award && award.totalAwarded > 0) {
+        onPointsEarnedRef.current?.(award);
+      }
+      setShowCompletionModal(true);
+    },
+    [group.id, userId],
+  );
+
+  const tryAutoCompletionCelebration = useCallback(async () => {
+    if (!started || !userId || !isMember) return;
+    if (currentDay < group.total) return;
+
+    try {
+      const verifiedDays = await fetchUserVerificationDays(group.id, userId);
+      if (
+        !shouldCelebrateChallengeCompletion({
+          started,
+          isMember,
+          currentDay,
+          totalDays: group.total,
+          verifiedDays,
+          groupId: group.id,
+        })
+      ) {
+        return;
+      }
+      await openCompletionCelebration();
+    } catch (error) {
+      console.error("completion celebration check failed", error);
+    }
+  }, [
+    currentDay,
+    group.id,
+    group.total,
+    isMember,
+    openCompletionCelebration,
+    started,
+    userId,
+  ]);
+
+  useEffect(() => {
+    void tryAutoCompletionCelebration();
+  }, [tryAutoCompletionCelebration]);
+
   const challengeDay = weekIndex * 7 + dayOffset + 1;
   const viewingToday = challengeDay === currentDay;
   const maxWeek = Math.max(0, Math.floor((currentDay - 1) / 7));
   const startedRef = useRef(started);
   const announcedRef = useRef(false);
   const ownerRef = useRef(owner);
-  const groupRef = useRef(group);
-  const onGroupUpdateRef = useRef(onGroupUpdate);
   const onRaceNoticesRef = useRef(onRaceNotices);
   const onNoticesRefreshRef = useRef(onNoticesRefresh);
   const channelRef = useRef<RealtimeChannel | null>(null);
 
   startedRef.current = started;
   ownerRef.current = owner;
-  groupRef.current = group;
-  onGroupUpdateRef.current = onGroupUpdate;
   onRaceNoticesRef.current = onRaceNotices;
   onNoticesRefreshRef.current = onNoticesRefresh;
 
@@ -1376,6 +1459,47 @@ export function RoomDetail({
   }
   const doneCount = seats.filter((seat) => Boolean(seat.videoUrl)).length;
 
+  const badgeGroup = useMemo(
+    () => ({ ...group, day: currentDay }),
+    [group, currentDay],
+  );
+
+  const [myCurrentDayVerified, setMyCurrentDayVerified] = useState(false);
+
+  useEffect(() => {
+    if (!started || !userId) {
+      setMyCurrentDayVerified(false);
+      return;
+    }
+
+    if (challengeDay === currentDay) {
+      setMyCurrentDayVerified(
+        dayRows.some(
+          (row) => normalizeGroupId(row.user_id) === normalizeGroupId(userId),
+        ),
+      );
+      return;
+    }
+
+    let cancelled = false;
+    void fetchVerifications(group.id, currentDay)
+      .then((rows) => {
+        if (cancelled) return;
+        setMyCurrentDayVerified(
+          rows.some(
+            (row) => normalizeGroupId(row.user_id) === normalizeGroupId(userId),
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setMyCurrentDayVerified(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [challengeDay, currentDay, dayRows, group.id, started, userId]);
+
   function selectDay(nextWeek: number, nextOffset: number) {
     const dayNum = nextWeek * 7 + nextOffset + 1;
     if (dayNum < 1 || dayNum > group.total || dayNum > currentDay) return;
@@ -1551,6 +1675,10 @@ export function RoomDetail({
           onPointsEarned?.(award);
         }
       }
+
+      if (currentDay >= group.total) {
+        await openCompletionCelebration();
+      }
     } finally {
       setUploading(false);
     }
@@ -1706,24 +1834,43 @@ export function RoomDetail({
         <GroupThumb src={groupThumbnailSrc(group)} alt={group.name} size={36} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-base font-bold text-white">{group.name}</h1>
-          <p className="flex items-center gap-1 text-[11px] text-gray-500">
-            <Lock size={10} />{" "}
-            {started
-              ? viewingToday
-                ? `오늘 인증 ${doneCount}/6 · D-${group.total - group.day}`
-                : `${challengeDay}일차 인증 ${doneCount}/6`
-              : isMember
-                ? `대기 중 · ${group.members.length}/${group.capacity}명`
-                : `둘러보기 · ${group.members.length}/${group.capacity}명`}
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-gray-500">
+            <Lock size={10} aria-hidden />
+            <span>
+              {started
+                ? viewingToday
+                  ? `오늘 인증 ${doneCount}/6`
+                  : `${challengeDay}일차 인증 ${doneCount}/6`
+                : isMember
+                  ? `대기 중 · ${group.members.length}/${group.capacity}명`
+                  : `둘러보기 · ${group.members.length}/${group.capacity}명`}
+            </span>
+            {started ? (
+              <ChallengeRunningBadge
+                group={badgeGroup}
+                myTodayVerified={Boolean(isMember && myCurrentDayVerified)}
+              />
+            ) : null}
           </p>
-          <button
-            type="button"
-            onClick={() => setShowGroupRules(true)}
-            className="mt-1 inline-flex cursor-pointer items-center gap-1 text-xs text-zinc-400 underline-offset-4 transition-colors hover:text-white hover:underline"
-          >
-            <ClipboardList size={12} aria-hidden />
-            모임 소개 및 규칙
-          </button>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <button
+              type="button"
+              onClick={() => setShowGroupRules(true)}
+              className="inline-flex cursor-pointer items-center gap-1 text-xs text-zinc-400 underline-offset-4 transition-colors hover:text-white hover:underline"
+            >
+              <ClipboardList size={12} aria-hidden />
+              모임 소개 및 규칙
+            </button>
+            {started ? (
+              <button
+                type="button"
+                onClick={() => setShowCompletionModal(true)}
+                className="text-[11px] font-medium text-[#00e599]/90 underline-offset-2 hover:text-[#00e599] hover:underline"
+              >
+                [🎉 완주팝업 보기]
+              </button>
+            ) : null}
+          </div>
         </div>
         <button
           type="button"
@@ -1891,6 +2038,17 @@ export function RoomDetail({
           />
         </>
       ) : null}
+
+      <MunsyCompletionModal
+        open={showCompletionModal}
+        groupName={group.name}
+        nickname={nickname}
+        goldBadge={completionGoldBadge}
+        onClose={() => {
+          setShowCompletionModal(false);
+          markCompletionCelebrationSeen(group.id);
+        }}
+      />
     </div>
   );
 }

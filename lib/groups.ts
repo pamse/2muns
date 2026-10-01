@@ -391,6 +391,8 @@ export async function fetchAppGroupById(id: string): Promise<Group | null> {
   return group ?? null;
 }
 
+export { markGroupCompletedIfEligible } from "@/lib/challengeCompletion";
+
 export async function startGroupRace(groupId: string, startedAt: string) {
   const attempts: Array<{ status?: string; started_at: string }> = [
     { status: "started", started_at: startedAt },

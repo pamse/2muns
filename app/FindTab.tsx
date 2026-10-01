@@ -3,16 +3,20 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronRight, Flame, Loader2, Lock, Plus, Users, Zap } from "lucide-react";
+import { ChevronRight, Loader2, Lock, Plus, Users, Zap } from "lucide-react";
+import { ChallengeRunningBadge } from "./ChallengeRunningBadge";
 import { PullToRefresh } from "./PullToRefresh";
 import {
   FIND_TAB_CHIP_ORDER,
   GROUP_FILTER_LABELS,
+  hasRaceStarted,
   isGroupMember,
   listJoinedActiveGroups,
+  normalizeGroupId,
   type Group,
   type GroupFilter,
 } from "./data";
+import { fetchVerifications } from "@/lib/verifications";
 import {
   isJoinableTabGroup,
   isRunningTabGroup,
@@ -140,12 +144,14 @@ function GroupCard({
   isMember,
   peekMode = false,
   soloEmergency = false,
+  myTodayVerified = false,
   onOpen,
 }: {
   group: Group;
   isMember: boolean;
   peekMode?: boolean;
   soloEmergency?: boolean;
+  myTodayVerified?: boolean;
   onOpen: (g: Group) => void;
 }) {
   const isJoinable = group.filter === "joinable";
@@ -203,9 +209,10 @@ function GroupCard({
                 <Users size={12} /> 모집 중
               </Pill>
             ) : (
-              <Pill tone="warn">
-                <Flame size={12} /> D-{group.total - group.day} 달리는 중
-              </Pill>
+              <ChallengeRunningBadge
+                group={group}
+                myTodayVerified={isMember && myTodayVerified}
+              />
             )}
             {full && <Pill tone="danger">정원 마감</Pill>}
           </div>
@@ -284,6 +291,52 @@ export function FindTab({
   const [peekGroup, setPeekGroup] = useState<Group | null>(null);
   const [midRaceJoinGroup, setMidRaceJoinGroup] = useState<Group | null>(null);
   const [midRaceJoining, setMidRaceJoining] = useState(false);
+  const [verifiedTodayByGroup, setVerifiedTodayByGroup] = useState<Record<string, boolean>>(
+    {},
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isLoggedIn || !myUserId) {
+      setVerifiedTodayByGroup({});
+      return;
+    }
+
+    void (async () => {
+      const targets = groups.filter(
+        (g) =>
+          g.filter === "ongoing" &&
+          hasRaceStarted(g) &&
+          isGroupMember(g, { userId: myUserId, nickname }),
+      );
+      if (targets.length === 0) {
+        if (!cancelled) setVerifiedTodayByGroup({});
+        return;
+      }
+
+      const entries = await Promise.all(
+        targets.map(async (g) => {
+          const day = Math.max(1, g.day);
+          try {
+            const rows = await fetchVerifications(g.id, day);
+            const verified = rows.some(
+              (row) => normalizeGroupId(row.user_id) === normalizeGroupId(myUserId),
+            );
+            return [normalizeGroupId(g.id), verified] as const;
+          } catch {
+            return [normalizeGroupId(g.id), false] as const;
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      setVerifiedTodayByGroup(Object.fromEntries(entries));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [groups, isLoggedIn, myUserId, nickname]);
 
   const mine = useMemo(() => {
     if (!isLoggedIn || !myUserId) return [];
@@ -395,6 +448,7 @@ export function FindTab({
             }
             peekMode={filter === "ongoing"}
             soloEmergency={isSoloEmergencyRecruit(g)}
+            myTodayVerified={verifiedTodayByGroup[normalizeGroupId(g.id)] ?? false}
             onOpen={handleOpenGroup}
           />
         ))}
