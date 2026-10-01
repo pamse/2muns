@@ -54,7 +54,7 @@ begin
   set
     email = coalesce(excluded.email, public.users.email),
     nickname = coalesce(nullif(public.users.nickname, ''), excluded.nickname),
-    avatar_url = coalesce(excluded.avatar_url, public.users.avatar_url);
+    avatar_url = coalesce(nullif(trim(public.users.avatar_url), ''), excluded.avatar_url);
 
   return new;
 exception

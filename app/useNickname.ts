@@ -238,7 +238,7 @@ export function useNickname() {
   const hydrateRegisteredProfile = useCallback(async (authUserId: string) => {
     const { data: row, error } = await supabase
       .from("users")
-      .select("nickname, selected_categories, nickname_updated_at")
+      .select("nickname, selected_categories, nickname_updated_at, avatar_url")
       .eq("id", authUserId)
       .maybeSingle();
 
@@ -263,8 +263,20 @@ export function useNickname() {
     } catch {
       // localStorage 접근 불가 시 무시
     }
+    const avatarUrl = row!.avatar_url?.trim();
+    if (avatarUrl) {
+      try {
+        window.localStorage.setItem(MY_PROFILE_IMAGE_KEY, avatarUrl);
+      } catch {
+        // localStorage 접근 불가 시 무시
+      }
+    }
     await syncProfileToSupabase({ userId: authUserId, nickname: trimmed });
-    dispatchProfileUpdated({ userId: authUserId, nickname: trimmed });
+    dispatchProfileUpdated({
+      userId: authUserId,
+      nickname: trimmed,
+      ...(avatarUrl ? { avatarUrl } : {}),
+    });
     return true;
   }, []);
 

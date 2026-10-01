@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 
 export const PROFILE_UPDATED_EVENT = "muns:profile-updated";
 export const AVATARS_BUCKET = "avatars";
+export const SUPABASE_PUBLIC_AVATAR_MARKER = "/storage/v1/object/public/avatars/";
 
 export type ProfileUpdatedDetail = {
   userId?: string | null;
@@ -69,18 +70,39 @@ export function dispatchProfileUpdated(detail: ProfileUpdatedDetail) {
   window.dispatchEvent(new CustomEvent<ProfileUpdatedDetail>(PROFILE_UPDATED_EVENT, { detail }));
 }
 
+export function isSupabasePublicAvatarUrl(url: string | null | undefined) {
+  const trimmed = url?.trim();
+  return Boolean(trimmed && trimmed.includes(SUPABASE_PUBLIC_AVATAR_MARKER));
+}
+
+/** DB·Storage에 저장할 영구 public URL (signed URL / cache-bust 쿼리 없음) */
+export function publicAvatarUrlForPath(path: string) {
+  const { data } = supabase.storage.from(AVATARS_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}
+
+/** 이미 등록된 avatar_url은 소셜 기본값·null로 덮어쓰지 않음 */
+export function pickPersistedAvatarUrl(
+  existing: string | null | undefined,
+  incoming: string | null | undefined,
+): string | null {
+  const current = existing?.trim() ?? "";
+  if (current) return current;
+  const next = incoming?.trim() ?? "";
+  return next || null;
+}
+
 export async function uploadProfileAvatar(userId: string, file: File) {
   const path = `${safeSegment(userId)}/${Date.now()}.${extensionForImage(file)}`;
   const { error } = await supabase.storage.from(AVATARS_BUCKET).upload(path, file, {
     upsert: true,
     contentType: file.type || "image/jpeg",
-    cacheControl: "0",
+    cacheControl: "31536000",
   });
   if (error) {
     throw new Error(error.message || "프로필 사진 업로드에 실패했습니다.");
   }
-  const { data } = supabase.storage.from(AVATARS_BUCKET).getPublicUrl(path);
-  return cacheBustAvatarUrl(data.publicUrl, Date.now());
+  return publicAvatarUrlForPath(path);
 }
 
 function isMissingColumnError(error: { message?: string; code?: string } | null) {

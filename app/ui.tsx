@@ -94,7 +94,13 @@ export function Avatar({
           alt=""
           className="absolute inset-0 h-full w-full rounded-full object-cover"
           referrerPolicy="no-referrer"
-          onError={() => setBroken(true)}
+          onError={(event) => {
+            console.warn("[Avatar] image load failed", {
+              src,
+              currentSrc: event.currentTarget.currentSrc || event.currentTarget.src,
+            });
+            setBroken(true);
+          }}
         />
       ) : (
         <span className="flex h-full w-full items-center justify-center">

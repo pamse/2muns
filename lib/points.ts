@@ -141,10 +141,7 @@ async function syncSnapshotToSupabase(userId: string, snapshot: UserPointsSnapsh
   try {
     const { error } = await supabase
       .from("users")
-      .update({
-        points: snapshot.points,
-        extra_group_slots: snapshot.extraGroupSlots,
-      })
+      .update({ points: snapshot.points })
       .eq("id", trimmedId);
     if (error) return;
 
@@ -164,14 +161,15 @@ async function loadFromSupabase(userId: string): Promise<Partial<UserPointsSnaps
   try {
     const { data: userRow, error: userError } = await supabase
       .from("users")
-      .select("points, extra_group_slots")
+      .select("points")
       .eq("id", trimmedId)
       .maybeSingle();
     if (userError || !userRow) return null;
 
+    // extra_group_slots는 supabase/points.sql 미적용 DB — localStorage만 사용
     return {
       points: userRow.points ?? 0,
-      extraGroupSlots: userRow.extra_group_slots ? 1 : 0,
+      extraGroupSlots: 0,
       heartBonusByGroup: {},
     };
   } catch {

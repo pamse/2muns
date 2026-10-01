@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  cacheBustAvatarUrl,
   dispatchProfileUpdated,
+  isSupabasePublicAvatarUrl,
+  PROFILE_UPDATED_EVENT,
   syncProfileToSupabase,
   uploadProfileAvatar,
 } from "@/lib/profile";
@@ -20,47 +23,98 @@ function readStoredUserId() {
   }
 }
 
+function readStoredAvatarUrl() {
+  try {
+    return window.localStorage.getItem(MY_PROFILE_IMAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function displayAvatarUrl(url: string) {
+  return cacheBustAvatarUrl(url, url);
+}
+
+function persistAvatarLocally(url: string) {
+  try {
+    window.localStorage.setItem(MY_PROFILE_IMAGE_KEY, url);
+  } catch {
+    // localStorage 용량 부족 시 메모리 상태만 유지
+  }
+}
+
 export function useMyProfileImage() {
   const [src, setSrc] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  const hydrateAvatar = useCallback(async (userId?: string | null) => {
+    const stored = readStoredAvatarUrl();
+    if (stored?.trim()) {
+      setSrc(displayAvatarUrl(stored.trim()));
+    }
+
+    const resolvedId = userId?.trim() || readStoredUserId();
+    if (!resolvedId) return;
+
+    const { data, error } = await supabase
+      .from("users")
+      .select("avatar_url")
+      .eq("id", resolvedId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("profile avatar hydrate failed", { userId: resolvedId, error });
+      return;
+    }
+
+    const remote = data?.avatar_url?.trim();
+    if (remote) {
+      persistAvatarLocally(remote);
+      setSrc(displayAvatarUrl(remote));
+      return;
+    }
+
+    const local = stored?.trim();
+    if (local && isSupabasePublicAvatarUrl(local)) {
+      try {
+        await syncProfileToSupabase({ userId: resolvedId, avatarUrl: local.split("?")[0] ?? local });
+      } catch (syncError) {
+        console.error("profile avatar re-sync failed", { userId: resolvedId, syncError });
+      }
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
-    async function hydrate() {
-      let stored: string | null = null;
-      try {
-        stored = window.localStorage.getItem(MY_PROFILE_IMAGE_KEY);
-      } catch {
-        stored = null;
+    void (async () => {
+      if (cancelled) return;
+      await hydrateAvatar(readStoredUserId());
+    })();
+
+    const onProfileUpdated = () => {
+      void hydrateAvatar(readStoredUserId());
+    };
+    window.addEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (cancelled) return;
+      const uid = session?.user?.id ?? null;
+      if (uid) {
+        void hydrateAvatar(uid);
+        return;
       }
-      if (!cancelled && stored) {
-        setSrc(stored);
-      }
+      setSrc(null);
+    });
 
-      const userId = readStoredUserId();
-      if (!userId) return;
-
-      const { data, error } = await supabase
-        .from("users")
-        .select("avatar_url")
-        .eq("id", userId)
-        .maybeSingle();
-      if (cancelled || error || !data?.avatar_url) return;
-
-      setSrc(data.avatar_url);
-      try {
-        window.localStorage.setItem(MY_PROFILE_IMAGE_KEY, data.avatar_url);
-      } catch {
-        // localStorage 용량 부족 시 메모리 상태만 유지
-      }
-    }
-
-    void hydrate();
     return () => {
       cancelled = true;
+      window.removeEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+      subscription.unsubscribe();
     };
-  }, []);
+  }, [hydrateAvatar]);
 
   const applyFile = useCallback(async (file: File) => {
     if (!file.type.startsWith("image/")) {
@@ -83,25 +137,15 @@ export function useMyProfileImage() {
       if (!userId) {
         const dataUrl = await readFileAsDataUrl(file);
         setSrc(dataUrl);
-        try {
-          window.localStorage.setItem(MY_PROFILE_IMAGE_KEY, dataUrl);
-        } catch {
-          window.alert(
-            "저장 공간이 부족합니다. 더 작은 이미지를 선택하면 새로고침 후에도 유지됩니다.",
-          );
-        }
+        persistAvatarLocally(dataUrl);
         dispatchProfileUpdated({ avatarUrl: dataUrl });
         return;
       }
 
       const publicUrl = await uploadProfileAvatar(userId, file);
       await syncProfileToSupabase({ userId, avatarUrl: publicUrl });
-      setSrc(publicUrl);
-      try {
-        window.localStorage.setItem(MY_PROFILE_IMAGE_KEY, publicUrl);
-      } catch {
-        // URL은 짧아서 실패할 일이 거의 없음
-      }
+      persistAvatarLocally(publicUrl);
+      setSrc(displayAvatarUrl(publicUrl));
       dispatchProfileUpdated({ userId, avatarUrl: publicUrl });
     } catch (error) {
       console.error("profile image save failed", error);

@@ -3,6 +3,7 @@ import {
   isUserRegistrationComplete,
   profileFromAuthUser,
 } from "@/lib/authUser";
+import { pickPersistedAvatarUrl } from "@/lib/profile";
 import { createSupabaseRouteHandlerClient } from "@/lib/supabase/server";
 
 function safeNextPath(raw: string | null) {
@@ -109,7 +110,7 @@ export async function GET(request: Request) {
         id: profile.id,
         email: profile.email,
         nickname: profile.nickname,
-        avatar_url: profile.avatar_url,
+        avatar_url: pickPersistedAvatarUrl(null, profile.avatar_url),
       })
       .select("nickname, selected_categories")
       .single();

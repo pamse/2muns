@@ -1,4 +1,5 @@
 import type { User } from "@supabase/supabase-js";
+import { pickPersistedAvatarUrl } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
 
 const NICKNAME_PATTERN = /^[가-힣a-zA-Z0-9_]{2,10}$/;
@@ -141,18 +142,32 @@ export async function ensurePublicUserFromAuth(user: User | null | undefined) {
       .eq("id", user.id)
       .maybeSingle();
 
-    // 2. 이미 존재하는 회원이면 기존 데이터를 덮어쓰지 않고 그대로 통과
+    const profile = profileFromAuthUser(user);
+
+    // 2. 기존 회원: avatar_url·nickname 등 DB 값 유지 (OAuth 메타로 덮어쓰지 않음)
     if (existingUser) {
+      const oauthAvatar = profile.avatar_url;
+      if (!existingUser.avatar_url?.trim() && oauthAvatar) {
+        const { data: patched, error: patchError } = await supabase
+          .from("users")
+          .update({ avatar_url: oauthAvatar })
+          .eq("id", user.id)
+          .is("avatar_url", null)
+          .select("id, nickname, avatar_url, email")
+          .maybeSingle();
+        if (!patchError && patched) {
+          return { ok: true as const, profile: patched };
+        }
+      }
       return { ok: true as const, profile: existingUser };
     }
 
-    // 3. 완전히 새로운 신규 회원일 때만 최초 1회 생성 (INSERT)
-    const profile = profileFromAuthUser(user);
+    // 3. 신규 회원만 INSERT
     const { error: insertError } = await supabase.from("users").insert({
       id: profile.id,
       email: profile.email,
       nickname: profile.nickname,
-      avatar_url: profile.avatar_url,
+      avatar_url: pickPersistedAvatarUrl(null, profile.avatar_url),
     });
 
     if (insertError) {
