@@ -12,22 +12,18 @@ type FacingMode = "user" | "environment";
 
 const RECORD_MS = 3000;
 const COMMENT_MAX = 20;
-const VIDEO_BASE: MediaTrackConstraints = {
-  width: { ideal: 720 },
-  height: { ideal: 1280 },
-  frameRate: { ideal: 30 },
-};
-
 function stopStream(stream: MediaStream | null) {
-  stream?.getTracks().forEach((track) => track.stop());
+  stream?.getTracks().forEach((track) => {
+    track.stop();
+  });
 }
 
-async function requestUserMedia(video: MediaTrackConstraints | boolean) {
-  try {
-    return await navigator.mediaDevices.getUserMedia({ video, audio: true });
-  } catch {
-    return await navigator.mediaDevices.getUserMedia({ video });
+function logCameraError(context: string, err: unknown) {
+  if (err instanceof DOMException || err instanceof Error) {
+    console.error("Camera Error:", err.name, err.message, { context });
+    return;
   }
+  console.error("Camera Error:", err, { context });
 }
 
 async function getCameraStream(facingMode: FacingMode) {
@@ -35,19 +31,26 @@ async function getCameraStream(facingMode: FacingMode) {
     throw new Error("unsupported");
   }
 
-  const attempts: Array<MediaTrackConstraints | boolean> = [
-    { ...VIDEO_BASE, facingMode: { exact: facingMode } },
-    { ...VIDEO_BASE, facingMode: { ideal: facingMode } },
-    { ...VIDEO_BASE, facingMode },
-    VIDEO_BASE,
-    true,
+  const attempts: MediaStreamConstraints[] = [
+    { video: { facingMode }, audio: false },
+    { video: { facingMode: "user" }, audio: false },
+    { video: true, audio: false },
   ];
 
   let lastError: unknown;
-  for (const video of attempts) {
+  for (let index = 0; index < attempts.length; index += 1) {
+    const constraints = attempts[index];
     try {
-      return await requestUserMedia(video);
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (index > 0) {
+        console.info("[CameraVerifyModal] getUserMedia fallback succeeded", {
+          attempt: index + 1,
+          constraints,
+        });
+      }
+      return stream;
     } catch (error) {
+      logCameraError(`getUserMedia attempt ${index + 1}`, error);
       lastError = error;
     }
   }
@@ -123,6 +126,15 @@ export function CameraVerifyModal({
     reviewBlobRef.current = null;
   }, []);
 
+  const releaseLiveStream = useCallback(() => {
+    stopStream(streamRef.current);
+    streamRef.current = null;
+    const el = liveRef.current;
+    if (el) {
+      el.srcObject = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) {
       setFacingMode("environment");
@@ -154,11 +166,7 @@ export function CameraVerifyModal({
       }
 
       try {
-        stopStream(streamRef.current);
-        streamRef.current = null;
-        if (liveRef.current) {
-          liveRef.current.srcObject = null;
-        }
+        releaseLiveStream();
 
         const stream = await getCameraStream(facingMode);
         if (cancelled) {
@@ -168,18 +176,32 @@ export function CameraVerifyModal({
         streamRef.current = stream;
         if (liveRef.current) {
           liveRef.current.srcObject = stream;
-          await liveRef.current.play().catch(() => undefined);
+          await liveRef.current.play().catch((playErr) => {
+            logCameraError("live video play()", playErr);
+          });
         }
         setError((prev) =>
-          prev?.startsWith("카메라 권한이 필요합니다") ||
+          prev?.startsWith("카메라") ||
           prev === "이 브라우저에서는 카메라를 사용할 수 없습니다."
             ? null
             : prev,
         );
-      } catch {
+      } catch (err) {
+        logCameraError("startCamera", err);
         if (cancelled) return;
-        if (!streamRef.current) {
+        releaseLiveStream();
+        const denied =
+          err instanceof DOMException &&
+          (err.name === "NotAllowedError" || err.name === "PermissionDeniedError");
+        const missing =
+          err instanceof DOMException &&
+          (err.name === "NotFoundError" || err.name === "DevicesNotFoundError");
+        if (denied) {
           setError("카메라 권한이 필요합니다. 브라우저에서 카메라 접근을 허용해 주세요.");
+        } else if (missing) {
+          setError("사용 가능한 카메라를 찾지 못했습니다. 다른 기기를 확인해 주세요.");
+        } else {
+          setError("카메라를 시작하지 못했습니다. 페이지를 새로고침 후 다시 시도해 주세요.");
         }
       }
     }
@@ -188,8 +210,9 @@ export function CameraVerifyModal({
 
     return () => {
       cancelled = true;
+      releaseLiveStream();
     };
-  }, [open, facingMode]);
+  }, [open, facingMode, releaseLiveStream]);
 
   useEffect(() => {
     if (!open) return;
@@ -198,23 +221,26 @@ export function CameraVerifyModal({
       closedRef.current = true;
       clearTimers();
       stopRecorder();
-      stopStream(streamRef.current);
-      streamRef.current = null;
-      if (liveRef.current) {
-        liveRef.current.srcObject = null;
-      }
+      releaseLiveStream();
       if (reviewUrlRef.current) {
         URL.revokeObjectURL(reviewUrlRef.current);
         reviewUrlRef.current = null;
       }
     };
-  }, [open, clearTimers, stopRecorder]);
+  }, [open, clearTimers, stopRecorder, releaseLiveStream]);
 
   const startRecording = useCallback(() => {
     const stream = streamRef.current;
-    if (!stream) {
-      setError("카메라 스트림을 찾지 못했습니다.");
+    if (!stream || stream.getVideoTracks().every((t) => t.readyState === "ended")) {
+      console.error("Camera Error:", "NoActiveStream", "카메라 스트림을 찾지 못했습니다.", {
+        context: "startRecording",
+        hasRef: Boolean(streamRef.current),
+        trackStates: streamRef.current?.getVideoTracks().map((t) => t.readyState),
+      });
+      setError("카메라 스트림을 찾지 못했습니다. 잠시 후 다시 촬영해 주세요.");
       setPhase("live");
+      armedRef.current = false;
+      setStarting(false);
       return;
     }
     if (typeof MediaRecorder === "undefined") {
