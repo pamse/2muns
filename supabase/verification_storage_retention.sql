@@ -1,0 +1,27 @@
+-- 2müns · 인증 영상 Storage 파기 (배치) — 설계 초안
+-- ⚠️ 아직 프로덕션 Cron/Edge Function에 연결되어 있지 않습니다.
+-- 앱은 lib/weekVideoRetention.ts 로 다운로드·재생 창을 제한합니다.
+--
+-- 권장 운영:
+-- 1) Supabase Edge Function (또는 Vercel Cron) 일 1회 실행
+-- 2) 주차 종료 + 24h(또는 완주 유예) 지난 verifications 행 조회
+-- 3) storage.objects 에서 video_path 객체 삭제 (service role)
+-- 4) verifications.video_path 를 NULL 또는 placeholder 로 UPDATE (행·day·comment 유지)
+--
+-- Storage: bucket `verifications`, public read, file_size_limit 20MB (verifications_setup.sql)
+-- R2 미사용 — Supabase Storage 단일
+
+-- 예시: 파기 대상 후보 (started_at·day 기준 KST 주차 창은 앱과 동일하게 계산 필요)
+-- select v.id, v.video_path, v.group_id, v.day, g.started_at, g.status, g.completed_at
+-- from public.verifications v
+-- join public.groups g on g.id = v.group_id
+-- where v.video_path is not null and v.video_path <> '';
+
+-- service role 전용 RPC 스켈레톤 (실제 창 계산은 Edge에서 TypeScript 재사용 권장)
+-- create or replace function public.purge_expired_verification_videos(dry_run boolean default true)
+-- returns integer language plpgsql security definer as $$
+-- begin
+--   raise notice 'Implement purge with service role; dry_run=%', dry_run;
+--   return 0;
+-- end;
+-- $$;

@@ -1547,6 +1547,7 @@ export function MyTab({
         groupId={selected?.id ?? ""}
         userId={myUserId ?? ""}
         week={shortsWindow?.week ?? 1}
+        startedAt={selected?.startedAt}
         groupForGrace={
           selected
             ? {

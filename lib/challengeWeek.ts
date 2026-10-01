@@ -1,4 +1,6 @@
 import { isCompletedGroup, type Group } from "@/app/data";
+import { isWithinCompletionGracePeriod } from "@/lib/groupCompletionGrace";
+import { isWithinWeekDownloadWindow } from "@/lib/weekVideoRetention";
 
 export const CHALLENGE_TOTAL_DAYS = 66;
 export const CHALLENGE_WEEKS = 10;
@@ -48,8 +50,12 @@ export function canDownloadWeekVideo(input: {
   totalDays?: number;
   hasCompletedDay66?: boolean;
   isGroupCompleted?: boolean;
+  startedAt?: string | null;
+  now?: number;
+  groupForGrace?: Pick<Group, "completedAt" | "startedAt" | "dbStatus"> | null;
 }) {
   const total = input.totalDays ?? CHALLENGE_TOTAL_DAYS;
+  const now = input.now ?? Date.now();
   const week = Math.max(1, Math.min(CHALLENGE_WEEKS, Math.floor(input.week)));
   const { fromDay, toDay } = weekChallengeDayRange(week, total);
   const weekDaysVerifiedCount = verifiedDaysInRange(
@@ -61,16 +67,21 @@ export function canDownloadWeekVideo(input: {
     input.hasCompletedDay66 ??
     hasVerifiedDay(input.verifiedDays, total);
 
-  if (input.isGroupCompleted) return true;
+  const meetsVerification =
+    week === CHALLENGE_WEEKS
+      ? completedDay66 ||
+        weekDaysVerifiedCount >= expectedDaysInWeek(week, total)
+      : weekDaysVerifiedCount >= 7;
 
-  if (week === CHALLENGE_WEEKS) {
-    return (
-      completedDay66 ||
-      weekDaysVerifiedCount >= expectedDaysInWeek(week, total)
-    );
+  if (!meetsVerification) return false;
+
+  const startedAt = input.groupForGrace?.startedAt ?? input.startedAt;
+
+  if (week === CHALLENGE_WEEKS && input.isGroupCompleted && input.groupForGrace) {
+    return isWithinCompletionGracePeriod(input.groupForGrace, now);
   }
 
-  return weekDaysVerifiedCount >= 7;
+  return isWithinWeekDownloadWindow(startedAt, week, now, total);
 }
 
 export function isGroupCompletedForWeekDownload(group: Group) {

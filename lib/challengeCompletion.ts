@@ -1,4 +1,5 @@
 import { normalizeGroupId } from "@/app/data";
+import { tryUpdateGroupCompletedAt } from "@/lib/groupsSchema";
 import { supabase } from "@/lib/supabase";
 
 export const CHALLENGE_TOTAL_DAYS = 66;
@@ -66,23 +67,17 @@ export async function markGroupCompletedIfEligible(groupId: string) {
   const completedAt = new Date().toISOString();
 
   for (const patch of attempts) {
-    let { data, error } = await supabase
+    const { data, error } = await supabase
       .from("groups")
-      .update({ ...patch, completed_at: completedAt })
+      .update(patch)
       .eq("id", id)
       .select("id, status")
       .maybeSingle();
 
-    if (error) {
-      ({ data, error } = await supabase
-        .from("groups")
-        .update(patch)
-        .eq("id", id)
-        .select("id, status")
-        .maybeSingle());
+    if (!error && data) {
+      void tryUpdateGroupCompletedAt(id, completedAt);
+      return true;
     }
-
-    if (!error && data) return true;
     if (error) {
       console.warn("markGroupCompletedIfEligible failed", { groupId: id, patch, error });
     }

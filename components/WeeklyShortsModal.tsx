@@ -10,10 +10,10 @@ import {
   verificationVideoUrl,
 } from "@/lib/verifications";
 import {
-  SHORTS_FFMPEG_TEST_MODE,
-  SHORTS_TEST_WEEK,
-} from "@/lib/shortsTestMode";
-import { CHALLENGE_WEEKS, weekChallengeDayRange } from "@/lib/challengeWeek";
+  canDownloadWeekVideo,
+  CHALLENGE_WEEKS,
+  weekChallengeDayRange,
+} from "@/lib/challengeWeek";
 import {
   completionGraceExpiresAtMs,
   isWithinCompletionGracePeriod,
@@ -180,6 +180,7 @@ export function WeeklyShortsModal({
   groupId,
   userId,
   week,
+  startedAt,
   groupForGrace,
 }: {
   open: boolean;
@@ -187,6 +188,7 @@ export function WeeklyShortsModal({
   groupId: string;
   userId: string;
   week: number;
+  startedAt?: string | null;
   /** 완주 후 24h 유예 안내 (10주차·completed 모임) */
   groupForGrace?: Pick<Group, "completedAt" | "startedAt" | "dbStatus"> | null;
 }) {
@@ -225,6 +227,23 @@ export function WeeklyShortsModal({
   const verifiedCount = useMemo(
     () => clips.filter((c) => c.videoUrl).length,
     [clips],
+  );
+
+  const verifiedDays = useMemo(
+    () => new Set(clips.filter((c) => c.videoUrl).map((c) => c.day)),
+    [clips],
+  );
+
+  const downloadPolicyAllowed = useMemo(
+    () =>
+      canDownloadWeekVideo({
+        week,
+        verifiedDays,
+        startedAt: groupForGrace?.startedAt ?? startedAt,
+        isGroupCompleted: isCompletedGroupStatus(groupForGrace?.dbStatus),
+        groupForGrace: groupForGrace ?? undefined,
+      }),
+    [week, verifiedDays, startedAt, groupForGrace],
   );
 
   const renderSegments = useMemo(
@@ -287,8 +306,6 @@ export function WeeklyShortsModal({
     };
   }, [open, groupId, userId, week]);
 
-  const apiWeekNumber = SHORTS_FFMPEG_TEST_MODE ? SHORTS_TEST_WEEK : week;
-
   const apiClips = useMemo(
     () =>
       renderSegments.map((segment) => ({
@@ -306,7 +323,7 @@ export function WeeklyShortsModal({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         clips: apiClips,
-        weekNumber: apiWeekNumber,
+        weekNumber: week,
       }),
     });
 
@@ -335,20 +352,22 @@ export function WeeklyShortsModal({
   }
 
   const canSaveMp4 =
-    SHORTS_FFMPEG_TEST_MODE ||
-    (apiClips.length > 0 &&
-      (week >= 10 ? verifiedCount >= 1 : verifiedCount >= 7));
+    downloadPolicyAllowed &&
+    apiClips.length > 0 &&
+    (week >= CHALLENGE_WEEKS ? verifiedCount >= 1 : verifiedCount >= 7);
 
   async function handleDownload() {
     if (downloading) return;
-    if (!SHORTS_FFMPEG_TEST_MODE && renderSegments.length === 0) {
-      window.alert("다운로드할 인증 영상이 없습니다.");
+    if (!downloadPolicyAllowed) {
+      window.alert(
+        week >= CHALLENGE_WEEKS
+          ? "10주차 숏폼은 완주 후 24시간 동안만 다운로드할 수 있습니다."
+          : "해당 주차 숏폼은 주차 종료 후 24시간 동안만 다운로드할 수 있습니다.",
+      );
       return;
     }
-    if (apiClips.length === 0) {
-      window.alert(
-        "TEST_MODE: API에 보낼 인증 영상 URL이 없습니다. 1주차(일차 1~7)에 업로드된 영상이 있는지 확인해 주세요.",
-      );
+    if (renderSegments.length === 0 || apiClips.length === 0) {
+      window.alert("다운로드할 인증 영상이 없습니다.");
       return;
     }
 
@@ -359,7 +378,7 @@ export function WeeklyShortsModal({
 
     try {
       const blob = await fetchServerRenderedHighlight();
-      triggerMp4FileDownload(blob, weekHighlightDownloadFilename(apiWeekNumber));
+      triggerMp4FileDownload(blob, weekHighlightDownloadFilename(week));
       setSaved(true);
     } catch (err) {
       console.error("Download error:", err);
@@ -376,12 +395,8 @@ export function WeeklyShortsModal({
 
   async function handleShareReels() {
     if (sharing || downloading) return;
-    if (!SHORTS_FFMPEG_TEST_MODE && renderSegments.length === 0) {
+    if (renderSegments.length === 0 || apiClips.length === 0) {
       window.alert("공유할 인증 영상이 없습니다.");
-      return;
-    }
-    if (apiClips.length === 0) {
-      window.alert("TEST_MODE: 공유할 인증 영상 URL이 없습니다.");
       return;
     }
 
@@ -392,7 +407,7 @@ export function WeeklyShortsModal({
 
     try {
       const blob = await fetchServerRenderedHighlight();
-      const filename = weekHighlightDownloadFilename(apiWeekNumber);
+      const filename = weekHighlightDownloadFilename(week);
       const file = new File([blob], filename, { type: "video/mp4" });
       const nav = navigator as Navigator & {
         canShare?: (data: ShareData) => boolean;
@@ -577,8 +592,9 @@ export function WeeklyShortsModal({
       </p>
 
       <p className="mt-4 text-xs leading-relaxed text-gray-400">
-        ⚠️ 24시간 유예 기간이 지나면 스토리지 용량 절감을 위해 원본 영상이 자동
-        파기되어 다시 다운로드할 수 없습니다.
+        ⚠️ 1~9주차는 해당 주 종료 후 24시간, 10주차(완주)는 완주 후 24시간까지만
+        숏폼 다운로드·원본 재생이 가능합니다. 유예가 끝나면 인증 기록은 남고
+        원본 영상은 서버 정책에 따라 삭제될 수 있습니다.
       </p>
     </BottomSheet>
   );

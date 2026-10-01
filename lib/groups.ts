@@ -12,6 +12,7 @@ import {
   type Member,
 } from "@/app/data";
 import { isEligibleForMyGroupsList } from "@/lib/groupCompletionGrace";
+import { isGroupsCompletedAtMissingError } from "@/lib/groupsSchema";
 import { getCategoryThumbnail } from "@/lib/categories";
 import {
   GROUP_STATUS_RECRUITING_SOLO,
@@ -640,18 +641,43 @@ export async function fetchUserActiveGroupIds(
   };
   let metaById = new Map<string, GroupMeta>();
   if (unresolved.length > 0) {
-    const { data: groupRows, error: groupError } = await supabase
+    let groupRows:
+      | Array<{
+          id: string;
+          status: string | null;
+          started_at: string | null;
+          completed_at?: string | null;
+        }>
+      | null = null;
+
+    const withCompleted = await supabase
       .from("groups")
       .select("id, status, started_at, completed_at")
       .in("id", unresolved);
-    if (!groupError) {
+
+    if (!withCompleted.error) {
+      groupRows = withCompleted.data;
+    } else if (isGroupsCompletedAtMissingError(withCompleted.error)) {
+      const fallback = await supabase
+        .from("groups")
+        .select("id, status, started_at")
+        .in("id", unresolved);
+      if (!fallback.error) {
+        groupRows = (fallback.data ?? []).map((row) => ({
+          ...row,
+          completed_at: null,
+        }));
+      }
+    }
+
+    if (groupRows?.length) {
       metaById = new Map(
-        (groupRows ?? []).map((row) => [
+        groupRows.map((row) => [
           normalizeGroupId(row.id),
           {
             status: row.status,
             started_at: row.started_at,
-            completed_at: (row as { completed_at?: string | null }).completed_at ?? null,
+            completed_at: row.completed_at ?? null,
           },
         ]),
       );

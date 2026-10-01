@@ -1,3 +1,4 @@
+import { r2PublicUrlBase, r2PublicUrlForObjectKey } from "@/lib/r2PublicUrl";
 import {
   contentTypeForBlob,
   storageExtensionForBlob,
@@ -75,8 +76,108 @@ export function verificationVideoUrl(path: string) {
     return trimmed;
   }
   const objectPath = trimmed.replace(/^verifications\//, "");
+  const r2Url = r2PublicUrlForObjectKey(objectPath);
+  if (r2Url) return r2Url;
+
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(objectPath);
   return data.publicUrl;
+}
+
+async function uploadVerificationVideoToR2(input: {
+  groupId: string;
+  userId: string;
+  day: number;
+  blob: Blob;
+}): Promise<{ path: string; publicUrl: string } | null> {
+  const contentType = contentTypeForBlob(input.blob);
+  const extension = storageExtensionForBlob(input.blob);
+
+  const presignRes = await fetch("/api/upload", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      groupId: input.groupId,
+      userId: input.userId,
+      day: input.day,
+      contentType,
+      contentLength: input.blob.size,
+      extension,
+    }),
+  });
+
+  if (presignRes.status === 503) {
+    return null;
+  }
+
+  if (!presignRes.ok) {
+    let detail = "";
+    try {
+      const raw = (await presignRes.json()) as { error?: string };
+      detail = raw.error?.trim() ?? "";
+    } catch {
+      // ignore
+    }
+    throw new Error(detail || "업로드 URL 발급에 실패했습니다.");
+  }
+
+  const presigned = (await presignRes.json()) as {
+    uploadUrl: string;
+    objectKey: string;
+    publicUrl?: string;
+    contentType?: string;
+  };
+
+  const putRes = await fetch(presigned.uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": presigned.contentType ?? contentType,
+    },
+    body: input.blob,
+  });
+
+  if (!putRes.ok) {
+    throw new Error(
+      `R2 업로드에 실패했습니다 (${putRes.status} ${putRes.statusText})`,
+    );
+  }
+
+  const path = presigned.objectKey;
+  return {
+    path,
+    publicUrl: presigned.publicUrl ?? verificationVideoUrl(path),
+  };
+}
+
+async function uploadVerificationVideoToSupabase(input: {
+  groupId: string;
+  userId: string;
+  day: number;
+  blob: Blob;
+}) {
+  const path = verificationObjectPathForUpsert(
+    input.groupId,
+    input.day,
+    input.userId,
+    input.blob,
+  );
+  const contentType = contentTypeForBlob(input.blob);
+  const { error } = await supabase.storage.from(BUCKET).upload(path, input.blob, {
+    upsert: true,
+    contentType,
+    cacheControl: "3600",
+  });
+
+  if (error) {
+    logShortsModalSupabaseError("uploadVerificationVideo", error as SupabaseErrorShape, {
+      path,
+    });
+    throw new Error(
+      error.message || "영상 업로드에 실패했습니다. 다시 시도해주세요.",
+    );
+  }
+
+  return { path, publicUrl: verificationVideoUrl(path) };
 }
 
 const VERIFICATION_SELECT_COLUMNS = [
@@ -212,29 +313,12 @@ export async function uploadVerificationVideo(input: {
   day: number;
   blob: Blob;
 }) {
-  const path = verificationObjectPathForUpsert(
-    input.groupId,
-    input.day,
-    input.userId,
-    input.blob,
-  );
-  const contentType = contentTypeForBlob(input.blob);
-  const { error } = await supabase.storage.from(BUCKET).upload(path, input.blob, {
-    upsert: true,
-    contentType,
-    cacheControl: "3600",
-  });
-
-  if (error) {
-    logShortsModalSupabaseError("uploadVerificationVideo", error as SupabaseErrorShape, {
-      path,
-    });
-    throw new Error(
-      error.message || "영상 업로드에 실패했습니다. 다시 시도해주세요.",
-    );
+  if (typeof window !== "undefined" && r2PublicUrlBase()) {
+    const viaR2 = await uploadVerificationVideoToR2(input);
+    if (viaR2) return viaR2;
   }
 
-  return { path, publicUrl: verificationVideoUrl(path) };
+  return uploadVerificationVideoToSupabase(input);
 }
 
 export async function upsertVerification(input: {

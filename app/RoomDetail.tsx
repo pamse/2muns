@@ -32,6 +32,7 @@ import {
   type Member,
 } from "./data";
 import { canDownloadWeekVideo } from "@/lib/challengeWeek";
+import { isVerificationVideoAccessible } from "@/lib/weekVideoRetention";
 import { WeeklyShortsModal } from "@/components/WeeklyShortsModal";
 import {
   fetchAppGroupById,
@@ -516,7 +517,13 @@ function seatsForChallengeDay(
   challengeDay: number,
   currentDay: number,
   rows: Verification[],
-  viewerUserId?: string | null,
+  viewerUserId: string | null | undefined,
+  mediaPolicy: {
+    startedAt: string | null | undefined;
+    totalDays: number;
+    isGroupCompleted: boolean;
+    groupForGrace: Pick<Group, "completedAt" | "startedAt" | "dbStatus">;
+  },
 ): Seat[] {
   const isToday = challengeDay === currentDay;
 
@@ -531,11 +538,19 @@ function seatsForChallengeDay(
       };
     }
     const row = findVerificationRowForSeat(seat, rows, viewerUserId);
-    const videoUrl =
-      row?.video_path?.trim() ?
-        verificationVideoUrl(row.video_path.trim())
-      : null;
-    const hasVerification = Boolean(row && videoUrl);
+    const rawPath = row?.video_path?.trim() ?? "";
+    const mayStream =
+      rawPath &&
+      isVerificationVideoAccessible({
+        startedAt: mediaPolicy.startedAt,
+        challengeDay,
+        currentDay,
+        totalDays: mediaPolicy.totalDays,
+        isGroupCompleted: mediaPolicy.isGroupCompleted,
+        groupForGrace: mediaPolicy.groupForGrace,
+      });
+    const videoUrl = mayStream ? verificationVideoUrl(rawPath) : null;
+    const hasVerification = Boolean(row && rawPath);
     return {
       ...seat,
       videoUrl,
@@ -604,8 +619,8 @@ function WeekDayNav({
                 ? "10주차(Day 64~66) 숏폼 다운로드"
                 : "이번 주 7일 숏폼 다운로드"
               : weekNumber >= 10
-                ? "Day 64~66 인증을 모두 완료하면 다운로드할 수 있어요"
-                : "이번 주 7일 인증을 모두 완료하면 다운로드할 수 있어요"
+                ? "10주차는 Day 64~66 인증 후, 완주·주차 종료 후 24시간 안에만 다운로드할 수 있어요"
+                : "7일 인증 후 해당 주 종료일(KST)부터 24시간 안에만 다운로드할 수 있어요"
           }
           disabled={!weekDownloadEnabled}
           onClick={() => {
@@ -1081,8 +1096,10 @@ export function RoomDetail({
   const [busy, setBusy] = useState(false);
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [completionGoldBadge, setCompletionGoldBadge] = useState(true);
-  const [showWeekShortsModal, setShowWeekShortsModal] = useState(false);
-  const [weekShortsWeek, setWeekShortsWeek] = useState(1);
+  const [weekShortsModal, setWeekShortsModal] = useState<{ open: boolean; week: number }>({
+    open: false,
+    week: 1,
+  });
   const [userVerifiedDays, setUserVerifiedDays] = useState<Set<number>>(new Set());
   const displayGroup = useMemo(
     () => filterGroupMembers(group, blockedUserIds),
@@ -1464,8 +1481,18 @@ export function RoomDetail({
         currentDay,
         dayRows,
         userId,
+        {
+          startedAt: group.startedAt,
+          totalDays: group.total,
+          isGroupCompleted: isCompletedGroup(group),
+          groupForGrace: {
+            completedAt: group.completedAt,
+            startedAt: group.startedAt,
+            dbStatus: group.dbStatus,
+          },
+        },
       ),
-    [displayGroup, nickname, myAvatar, userId, challengeDay, currentDay, dayRows],
+    [displayGroup, nickname, myAvatar, userId, challengeDay, currentDay, dayRows, group],
   );
 
   function openMemberProfile(member: Member) {
@@ -1523,7 +1550,13 @@ export function RoomDetail({
         week: weekNumberForNav,
         verifiedDays: userVerifiedDays,
         totalDays: group.total,
+        startedAt: group.startedAt,
         isGroupCompleted: isCompletedGroup(group),
+        groupForGrace: {
+          completedAt: group.completedAt,
+          startedAt: group.startedAt,
+          dbStatus: group.dbStatus,
+        },
       }),
     [group, userVerifiedDays, weekNumberForNav],
   );
@@ -1983,8 +2016,7 @@ export function RoomDetail({
             weekIndex={weekIndex}
             weekDownloadEnabled={canDownloadCurrentWeek}
             onDownloadWeek={() => {
-              setWeekShortsWeek(weekNumberForNav);
-              setShowWeekShortsModal(true);
+              setWeekShortsModal({ open: true, week: weekNumberForNav });
             }}
             dayOffset={dayOffset}
             currentDay={currentDay}
@@ -2142,11 +2174,12 @@ export function RoomDetail({
 
       {userId ? (
         <WeeklyShortsModal
-          open={showWeekShortsModal}
-          onClose={() => setShowWeekShortsModal(false)}
+          open={weekShortsModal.open}
+          onClose={() => setWeekShortsModal((prev) => ({ ...prev, open: false }))}
           groupId={group.id}
           userId={userId}
-          week={weekShortsWeek}
+          week={weekShortsModal.week}
+          startedAt={group.startedAt}
           groupForGrace={{
             completedAt: group.completedAt,
             startedAt: group.startedAt,
