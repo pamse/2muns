@@ -1546,10 +1546,15 @@ export function MyTab({
         onClose={() => setShowShortsModal(false)}
         groupId={selected?.id ?? ""}
         userId={myUserId ?? ""}
-        week={
-          SHORTS_FFMPEG_TEST_MODE
-            ? SHORTS_TEST_WEEK
-            : (shortsWindow?.week ?? 1)
+        week={shortsWindow?.week ?? 1}
+        groupForGrace={
+          selected
+            ? {
+                completedAt: selected.completedAt,
+                startedAt: selected.startedAt,
+                dbStatus: selected.dbStatus,
+              }
+            : null
         }
       />
 

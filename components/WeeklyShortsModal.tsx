@@ -13,7 +13,12 @@ import {
   SHORTS_FFMPEG_TEST_MODE,
   SHORTS_TEST_WEEK,
 } from "@/lib/shortsTestMode";
-import { weekChallengeDayRange } from "@/lib/challengeWeek";
+import { CHALLENGE_WEEKS, weekChallengeDayRange } from "@/lib/challengeWeek";
+import {
+  completionGraceExpiresAtMs,
+  isWithinCompletionGracePeriod,
+} from "@/lib/groupCompletionGrace";
+import { isCompletedGroupStatus, type Group } from "@/app/data";
 import { triggerMp4FileDownload, weekHighlightDownloadFilename } from "@/lib/videoFormat";
 
 function InstagramIcon() {
@@ -44,6 +49,18 @@ export type WeekShortClip = {
 
 function weekDayRange(week: number): { fromDay: number; toDay: number } {
   return weekChallengeDayRange(week);
+}
+
+function formatGraceTimeRemaining(expiresAtMs: number, now: number) {
+  const ms = Math.max(0, expiresAtMs - now);
+  if (ms <= 0) return null;
+  const totalMinutes = Math.ceil(ms / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}시간 ${minutes}분` : `${hours}시간`;
+  }
+  return `${minutes}분`;
 }
 
 function buildWeekClips(
@@ -163,12 +180,15 @@ export function WeeklyShortsModal({
   groupId,
   userId,
   week,
+  groupForGrace,
 }: {
   open: boolean;
   onClose: () => void;
   groupId: string;
   userId: string;
   week: number;
+  /** 완주 후 24h 유예 안내 (10주차·completed 모임) */
+  groupForGrace?: Pick<Group, "completedAt" | "startedAt" | "dbStatus"> | null;
 }) {
   const [doubleSpeed, setDoubleSpeed] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -179,6 +199,28 @@ export function WeeklyShortsModal({
   const [loadingClips, setLoadingClips] = useState(false);
   const [clips, setClips] = useState<WeekShortClip[]>([]);
   const [renderProgress, setRenderProgress] = useState<string | null>(null);
+  const [graceNow, setGraceNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!open) return;
+    setGraceNow(Date.now());
+    const id = window.setInterval(() => setGraceNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, [open]);
+
+  const graceBannerText = useMemo(() => {
+    if (!groupForGrace) return null;
+    const finalWeek = week >= CHALLENGE_WEEKS;
+    const completed = isCompletedGroupStatus(groupForGrace.dbStatus);
+    if (!finalWeek && !completed) return null;
+    if (!isWithinCompletionGracePeriod(groupForGrace, graceNow)) return null;
+    const expiresAt = completionGraceExpiresAtMs(groupForGrace);
+    if (expiresAt == null) return null;
+    const remaining = formatGraceTimeRemaining(expiresAt, graceNow);
+    if (!remaining) return null;
+    const weekLabel = week >= CHALLENGE_WEEKS ? CHALLENGE_WEEKS : week;
+    return `⏰ ${weekLabel}주차 숏폼 다운 및 방이 사라지기까지 ${remaining} 남았습니다.`;
+  }, [groupForGrace, graceNow, week]);
 
   const verifiedCount = useMemo(
     () => clips.filter((c) => c.videoUrl).length,
@@ -393,13 +435,12 @@ export function WeeklyShortsModal({
     <BottomSheet
       open={open}
       onClose={onClose}
-      title={`${apiWeekNumber}주 차 숏츠 미리보기`}
+      title={`${week}주 차 숏츠 미리보기`}
       data-shorts-source="verifications-storage"
     >
-      {SHORTS_FFMPEG_TEST_MODE ? (
-        <p className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] leading-relaxed text-amber-100">
-          {/* TODO: TEST_MODE_BYPASS */}
-          FFmpeg API 테스트 모드 — 24h 유예·주차 창 조건을 우회합니다.
+      {graceBannerText ? (
+        <p className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-300">
+          {graceBannerText}
         </p>
       ) : null}
       {loadError ? (

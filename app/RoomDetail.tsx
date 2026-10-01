@@ -2147,6 +2147,11 @@ export function RoomDetail({
           groupId={group.id}
           userId={userId}
           week={weekShortsWeek}
+          groupForGrace={{
+            completedAt: group.completedAt,
+            startedAt: group.startedAt,
+            dbStatus: group.dbStatus,
+          }}
         />
       ) : null}
     </div>
