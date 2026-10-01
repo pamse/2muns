@@ -1,6 +1,8 @@
 // 2müns MVP — 타입 정의 & Mock 데이터
 // 모든 화면이 공유하는 도메인 모델과 초기 목업 데이터를 한 곳에 모아둡니다.
 
+import { isEligibleForMyGroupsList } from "@/lib/groupCompletionGrace";
+
 export type TabKey = "info" | "find" | "my";
 export type GroupStatus = "ongoing" | "joinable";
 export type GroupFilter = GroupStatus | "mine";
@@ -56,6 +58,8 @@ export type Group = {
   startDate?: string | null;
   /** DB `groups.status` 원본. 종료/완료 모임 제외에 사용 */
   dbStatus?: string | null;
+  /** 완주 처리 시각 (ISO). 24h 유예·다운로드 기준 */
+  completedAt?: string | null;
   /** 방장 퇴장 후 24h 추가 모집 만료 시각 (ISO) */
   additionalRecruitingUntil?: string | null;
 };
@@ -257,10 +261,9 @@ export function resolveUserJoinedGroupIds(
     if (normalized) ids.add(normalized);
   }
   for (const group of groups) {
-    if (!isActiveChallengeGroup(group)) continue;
-    if (isGroupMember(group, me)) {
-      ids.add(normalizeGroupId(group.id));
-    }
+    if (!isGroupMember(group, me)) continue;
+    if (!isEligibleForMyGroupsList(group)) continue;
+    ids.add(normalizeGroupId(group.id));
   }
   return [...ids];
 }
@@ -284,10 +287,15 @@ export function listJoinedActiveGroups(
   const extra = new Set(
     resolveUserJoinedGroupIds(groups, me, extraGroupIds).map(normalizeGroupId),
   );
+  const rawGroups = groups.filter((group) =>
+    extra.has(normalizeGroupId(group.id)),
+  );
   const joined = groups.filter((group) => {
-    if (!isActiveChallengeGroup(group)) return false;
+    if (!isEligibleForMyGroupsList(group)) return false;
     return extra.has(normalizeGroupId(group.id));
   });
+  console.log("[DEBUG] DB에서 불러온 내 모임들:", rawGroups);
+  console.log("[DEBUG] 24시간 유예 필터 통과한 모임들:", joined);
   const seen = new Set<string>();
   const unique: Group[] = [];
   for (const group of joined) {

@@ -1341,8 +1341,10 @@ export function MyTab({
             {`⏳ 파기까지 ${formatHms(purgeLeft)} 남음`}
           </p>
           <p className="mt-1.5 pr-6 text-[12px] leading-relaxed text-gray-400">
-            이번 주 7일의 노력이 담긴 숏폼 클립이 완성되었어요. 24시간 후 서버에서
-            영구 삭제됩니다.
+            {shortsWindow.week >= 10
+              ? "마지막 10주차(Day 64~66) 숏폼 클립이 완성되었어요."
+              : "이번 주 7일의 노력이 담긴 숏폼 클립이 완성되었어요."}{" "}
+            24시간 후 서버에서 영구 삭제됩니다.
           </p>
           <button
             type="button"

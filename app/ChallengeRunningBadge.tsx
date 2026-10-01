@@ -2,14 +2,19 @@
 
 import { Flame } from "lucide-react";
 import { isCompletedGroup, type Group } from "./data";
+import { resolveCurrentChallengeDay } from "@/lib/challengeBadge";
 import { Pill } from "./ui";
 
-export function challengeDaysLeft(group: Pick<Group, "day" | "total">) {
-  return Math.max(0, group.total - group.day);
+export function challengeDaysLeft(group: Pick<Group, "day" | "total" | "startedAt" | "raceStatus" | "dbStatus">) {
+  const day = resolveCurrentChallengeDay(group);
+  return Math.max(0, group.total - day);
 }
 
-export function isChallengeFinalDay(group: Pick<Group, "day" | "total">) {
-  return group.day >= group.total || challengeDaysLeft(group) === 0;
+export function isChallengeFinalDay(
+  group: Pick<Group, "day" | "total" | "startedAt" | "raceStatus" | "dbStatus">,
+) {
+  const day = resolveCurrentChallengeDay(group);
+  return day >= group.total || challengeDaysLeft(group) === 0;
 }
 
 export function resolveChallengeRunningBadge(input: {
@@ -18,6 +23,7 @@ export function resolveChallengeRunningBadge(input: {
   myTodayVerified: boolean;
 }) {
   const { group, myTodayVerified } = input;
+  const day = resolveCurrentChallengeDay(group);
 
   if (isCompletedGroup(group)) {
     return { kind: "success" as const, text: "🎉 완주 성공" };
@@ -25,6 +31,18 @@ export function resolveChallengeRunningBadge(input: {
 
   const daysLeft = challengeDaysLeft(group);
   const finalDay = isChallengeFinalDay(group);
+
+  if (process.env.NEXT_PUBLIC_DEBUG_CHALLENGE_BADGE === "1") {
+    console.info("[challenge-badge] resolve", {
+      groupId: group.id,
+      day,
+      total: group.total,
+      daysLeft,
+      finalDay,
+      myTodayVerified,
+      dbStatus: group.dbStatus,
+    });
+  }
 
   if (finalDay && myTodayVerified) {
     return { kind: "success" as const, text: "🎉 완주 성공" };

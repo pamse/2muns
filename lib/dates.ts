@@ -81,17 +81,28 @@ export function getWeeklyShortsWindow(
 ): WeeklyShortsWindow | null {
   if (!startedAt) return null;
   const dayCount = challengeDayNumber(startedAt, now);
-  if (dayCount < 7 || dayCount % 7 !== 0) return null;
+  if (dayCount < 7) return null;
 
   const startKey = localDateKey(startedAt);
   if (!startKey) return null;
+
+  let week: number;
+  if (dayCount >= 66) {
+    if (dayCount !== 66) return null;
+    week = 10;
+  } else if (dayCount % 7 !== 0) {
+    return null;
+  } else {
+    week = dayCount / 7;
+  }
+
   const weekEndKey = addDaysToKey(startKey, dayCount - 1);
   const windowStart = kstMidnightMs(weekEndKey);
   const expiresAt = windowStart + MS_PER_DAY;
   const ts = now.getTime();
   if (ts < windowStart || ts >= expiresAt) return null;
 
-  return { week: dayCount / 7, dayCount, expiresAt };
+  return { week, dayCount, expiresAt };
 }
 
 /** 시작일~어제까지 미인증 일수. 오늘(진행 중)과 시작 전 날짜는 결석이 아니다. */

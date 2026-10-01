@@ -13,6 +13,7 @@ import {
   SHORTS_FFMPEG_TEST_MODE,
   SHORTS_TEST_WEEK,
 } from "@/lib/shortsTestMode";
+import { weekChallengeDayRange } from "@/lib/challengeWeek";
 import { triggerMp4FileDownload, weekHighlightDownloadFilename } from "@/lib/videoFormat";
 
 function InstagramIcon() {
@@ -42,8 +43,7 @@ export type WeekShortClip = {
 };
 
 function weekDayRange(week: number): { fromDay: number; toDay: number } {
-  const w = Math.max(1, Math.floor(week));
-  return { fromDay: (w - 1) * 7 + 1, toDay: w * 7 };
+  return weekChallengeDayRange(week);
 }
 
 function buildWeekClips(
@@ -293,7 +293,9 @@ export function WeeklyShortsModal({
   }
 
   const canSaveMp4 =
-    SHORTS_FFMPEG_TEST_MODE || (verifiedCount > 0 && apiClips.length > 0);
+    SHORTS_FFMPEG_TEST_MODE ||
+    (apiClips.length > 0 &&
+      (week >= 10 ? verifiedCount >= 1 : verifiedCount >= 7));
 
   async function handleDownload() {
     if (downloading) return;

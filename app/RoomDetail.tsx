@@ -23,6 +23,7 @@ import { MunsyCompletionModal } from "./MunsyCompletionModal";
 import {
   getGroupOwnerId,
   hasRaceStarted,
+  isCompletedGroup,
   isGroupMember,
   isGroupOwner,
   ME_AVATAR,
@@ -30,6 +31,8 @@ import {
   type Group,
   type Member,
 } from "./data";
+import { canDownloadWeekVideo } from "@/lib/challengeWeek";
+import { WeeklyShortsModal } from "@/components/WeeklyShortsModal";
 import {
   fetchAppGroupById,
   challengeDayFromStart,
@@ -83,6 +86,11 @@ import {
   type PointAwardResult,
 } from "@/lib/points";
 import { ChallengeRunningBadge } from "./ChallengeRunningBadge";
+import {
+  debugChallengeBadge,
+  groupForChallengeBadge,
+  isUserVerifiedOnChallengeDay,
+} from "@/lib/challengeBadge";
 import { Avatar, GroupThumb, Pill, StackedAvatars } from "./ui";
 import { groupThumbnailSrc } from "@/lib/categories";
 
@@ -554,6 +562,8 @@ function WeekDayNav({
   dayOffset,
   currentDay,
   totalDays,
+  weekDownloadEnabled,
+  onDownloadWeek,
   onWeekChange,
   onSelectOffset,
 }: {
@@ -561,6 +571,8 @@ function WeekDayNav({
   dayOffset: number;
   currentDay: number;
   totalDays: number;
+  weekDownloadEnabled: boolean;
+  onDownloadWeek: () => void;
   onWeekChange: (next: number) => void;
   onSelectOffset: (offset: number) => void;
 }) {
@@ -585,9 +597,26 @@ function WeekDayNav({
         </p>
         <button
           type="button"
-          aria-label="주간 아카이브 다운로드"
-          title="7일 숏폼 묶음 다운로드 (준비 중)"
-          className="rounded-lg p-1 text-slate-500 transition-colors hover:text-[#00e599]"
+          aria-label="주간 숏츠 다운로드"
+          title={
+            weekDownloadEnabled
+              ? weekNumber >= 10
+                ? "10주차(Day 64~66) 숏폼 다운로드"
+                : "이번 주 7일 숏폼 다운로드"
+              : weekNumber >= 10
+                ? "Day 64~66 인증을 모두 완료하면 다운로드할 수 있어요"
+                : "이번 주 7일 인증을 모두 완료하면 다운로드할 수 있어요"
+          }
+          disabled={!weekDownloadEnabled}
+          onClick={() => {
+            if (!weekDownloadEnabled) return;
+            onDownloadWeek();
+          }}
+          className={`rounded-lg p-1 transition-colors ${
+            weekDownloadEnabled
+              ? "text-[#00e599] hover:text-[#4dffaa]"
+              : "cursor-not-allowed text-slate-600 opacity-50"
+          }`}
         >
           <Download size={16} />
         </button>
@@ -1052,6 +1081,9 @@ export function RoomDetail({
   const [busy, setBusy] = useState(false);
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [completionGoldBadge, setCompletionGoldBadge] = useState(true);
+  const [showWeekShortsModal, setShowWeekShortsModal] = useState(false);
+  const [weekShortsWeek, setWeekShortsWeek] = useState(1);
+  const [userVerifiedDays, setUserVerifiedDays] = useState<Set<number>>(new Set());
   const displayGroup = useMemo(
     () => filterGroupMembers(group, blockedUserIds),
     [group, blockedUserIds],
@@ -1119,9 +1151,11 @@ export function RoomDetail({
 
       if (!options?.skipStatusUpdate) {
         await markGroupCompletedIfEligible(group.id);
+        const completedAt = new Date().toISOString();
         onGroupUpdateRef.current?.({
           ...groupRef.current,
           dbStatus: "completed",
+          completedAt,
         });
       }
 
@@ -1356,6 +1390,24 @@ export function RoomDetail({
   }, [loadVerificationsForDay, started]);
 
   useEffect(() => {
+    if (!started || !userId) {
+      setUserVerifiedDays(new Set());
+      return;
+    }
+    let cancelled = false;
+    void fetchUserVerificationDays(group.id, userId)
+      .then((days) => {
+        if (!cancelled) setUserVerifiedDays(new Set(days));
+      })
+      .catch(() => {
+        if (!cancelled) setUserVerifiedDays(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [group.id, started, userId, dayRows]);
+
+  useEffect(() => {
     if (!started) return;
     const refresh = () => {
       if (document.visibilityState === "hidden") return;
@@ -1460,8 +1512,20 @@ export function RoomDetail({
   const doneCount = seats.filter((seat) => Boolean(seat.videoUrl)).length;
 
   const badgeGroup = useMemo(
-    () => ({ ...group, day: currentDay }),
+    () => groupForChallengeBadge({ ...group, day: currentDay }),
     [group, currentDay],
+  );
+
+  const weekNumberForNav = weekIndex + 1;
+  const canDownloadCurrentWeek = useMemo(
+    () =>
+      canDownloadWeekVideo({
+        week: weekNumberForNav,
+        verifiedDays: userVerifiedDays,
+        totalDays: group.total,
+        isGroupCompleted: isCompletedGroup(group),
+      }),
+    [group, userVerifiedDays, weekNumberForNav],
   );
 
   const [myCurrentDayVerified, setMyCurrentDayVerified] = useState(false);
@@ -1472,33 +1536,54 @@ export function RoomDetail({
       return;
     }
 
-    if (challengeDay === currentDay) {
-      setMyCurrentDayVerified(
-        dayRows.some(
-          (row) => normalizeGroupId(row.user_id) === normalizeGroupId(userId),
-        ),
+    let cancelled = false;
+
+    const fromDayRows =
+      challengeDay === currentDay &&
+      dayRows.some(
+        (row) =>
+          row.day === currentDay &&
+          normalizeGroupId(row.user_id) === normalizeGroupId(userId),
       );
+
+    if (fromDayRows) {
+      setMyCurrentDayVerified(true);
+      debugChallengeBadge("RoomDetail header verify (dayRows)", {
+        groupId: group.id,
+        groupName: group.name,
+        currentDay,
+        challengeDay,
+        myCurrentDayVerified: true,
+      });
       return;
     }
 
-    let cancelled = false;
-    void fetchVerifications(group.id, currentDay)
-      .then((rows) => {
+    void isUserVerifiedOnChallengeDay(group.id, userId, currentDay)
+      .then((verified) => {
         if (cancelled) return;
-        setMyCurrentDayVerified(
-          rows.some(
-            (row) => normalizeGroupId(row.user_id) === normalizeGroupId(userId),
-          ),
-        );
+        setMyCurrentDayVerified(verified);
+        debugChallengeBadge("RoomDetail header verify (fetchUserVerificationDays)", {
+          groupId: group.id,
+          groupName: group.name,
+          currentDay,
+          groupDayField: group.day,
+          challengeDay,
+          myCurrentDayVerified: verified,
+        });
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) setMyCurrentDayVerified(false);
+        debugChallengeBadge("RoomDetail verify fetch failed", {
+          groupId: group.id,
+          currentDay,
+          error,
+        });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [challengeDay, currentDay, dayRows, group.id, started, userId]);
+  }, [challengeDay, currentDay, dayRows, group.day, group.id, group.name, started, userId]);
 
   function selectDay(nextWeek: number, nextOffset: number) {
     const dayNum = nextWeek * 7 + nextOffset + 1;
@@ -1896,6 +1981,11 @@ export function RoomDetail({
           <VerifyTimeBanner group={group} />
           <WeekDayNav
             weekIndex={weekIndex}
+            weekDownloadEnabled={canDownloadCurrentWeek}
+            onDownloadWeek={() => {
+              setWeekShortsWeek(weekNumberForNav);
+              setShowWeekShortsModal(true);
+            }}
             dayOffset={dayOffset}
             currentDay={currentDay}
             totalDays={group.total}
@@ -2049,6 +2139,16 @@ export function RoomDetail({
           markCompletionCelebrationSeen(group.id);
         }}
       />
+
+      {userId ? (
+        <WeeklyShortsModal
+          open={showWeekShortsModal}
+          onClose={() => setShowWeekShortsModal(false)}
+          groupId={group.id}
+          userId={userId}
+          week={weekShortsWeek}
+        />
+      ) : null}
     </div>
   );
 }

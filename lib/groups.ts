@@ -1,7 +1,6 @@
 import {
   JOIN_LIMIT_MESSAGE,
   MAX_JOINED_GROUPS,
-  isActiveChallengeGroup,
   isCompletedGroupStatus,
   isEndedGroupStatus,
   isGroupMember,
@@ -12,6 +11,7 @@ import {
   type GroupStatus,
   type Member,
 } from "@/app/data";
+import { isEligibleForMyGroupsList } from "@/lib/groupCompletionGrace";
 import { getCategoryThumbnail } from "@/lib/categories";
 import {
   GROUP_STATUS_RECRUITING_SOLO,
@@ -25,6 +25,104 @@ import type { AppGroup, AppUser } from "@/lib/database.types";
 
 const TOTAL_DAYS = 66;
 const JOINED_IDS_STORAGE_PREFIX = "muns:joined-groups:";
+
+/** 피드 조회 — completed/finished 포함, deleted 등 종료·숨김 상태 제외 */
+const GROUPS_FEED_DB_STATUSES = [
+  "recruiting",
+  GROUP_STATUS_RECRUITING_SOLO,
+  "started",
+  "ongoing",
+  "active",
+  "active_recruiting",
+  "completed",
+  "finished",
+] as const;
+
+/** 내 모임·멤버십 보강 조회 — 완주 직후 24h 유예를 위해 completed 필수 */
+const GROUPS_MY_MEMBERSHIP_DB_STATUSES = [
+  "started",
+  "ongoing",
+  "active",
+  "completed",
+  "finished",
+  "recruiting",
+  GROUP_STATUS_RECRUITING_SOLO,
+] as const;
+
+function mergeGroupLists(primary: Group[], extra: Group[]): Group[] {
+  if (extra.length === 0) return primary;
+  const merged = new Map(primary.map((group) => [normalizeGroupId(group.id), group]));
+  for (const group of extra) {
+    merged.set(normalizeGroupId(group.id), group);
+  }
+  return [...merged.values()];
+}
+
+async function collectUserMembershipGroupIds(
+  userId: string,
+  nickname?: string | null,
+): Promise<string[]> {
+  const ids = new Set<string>();
+  const membershipUserIds = await resolveMembershipUserIds(userId, nickname);
+  if (membershipUserIds.length === 0) return [];
+
+  const { data: memberRows, error: memberError } = await supabase
+    .from("group_members")
+    .select("group_id, status")
+    .in("user_id", membershipUserIds);
+  if (memberError) {
+    throw new Error(memberError.message || "참여 중인 모임을 확인할 수 없습니다.");
+  }
+  for (const row of memberRows ?? []) {
+    if (!isActiveMemberRow(row)) continue;
+    const id = normalizeGroupId(row.group_id);
+    if (id) ids.add(id);
+  }
+
+  for (const membershipUserId of membershipUserIds) {
+    const ownerResult = await supabase
+      .from("groups")
+      .select("id, status")
+      .eq("owner_id", membershipUserId)
+      .in("status", [...GROUPS_MY_MEMBERSHIP_DB_STATUSES]);
+    if (!ownerResult.error) {
+      for (const row of ownerResult.data ?? []) {
+        const id = normalizeGroupId(row.id);
+        if (id) ids.add(id);
+      }
+    }
+  }
+
+  return [...ids];
+}
+
+/** 멤버십 기준으로 started·completed 등을 DB에서 직접 조회 (피드 필터에 누락된 완주 모임 보강) */
+async function fetchUserMembershipGroupsFromDb(
+  userId: string,
+  nickname?: string | null,
+): Promise<Group[]> {
+  let ids: string[];
+  try {
+    ids = await collectUserMembershipGroupIds(userId, nickname);
+  } catch (error) {
+    console.error("membership group ids failed", error);
+    return [];
+  }
+  if (ids.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("groups")
+    .select("*")
+    .in("id", ids)
+    .in("status", ["started", "completed", "finished", "ongoing", "active"]);
+
+  if (error) {
+    console.error("membership groups select failed", error);
+    return [];
+  }
+  if (!data?.length) return [];
+  return hydrateGroups(data as AppGroup[]);
+}
 
 export function readPersistedJoinedIds(userId: string): string[] {
   if (typeof window === "undefined" || !userId) return [];
@@ -171,6 +269,9 @@ function mapStatus(
   if (isStartedGroupStatus(status, startedAt)) {
     return { filter: "ongoing", raceStatus: "started" };
   }
+  if (isCompletedGroupStatus(status)) {
+    return { filter: "ongoing", raceStatus: "started" };
+  }
   return { filter: "joinable", raceStatus: "recruiting" };
 }
 
@@ -199,6 +300,7 @@ export function mapAppGroup(row: AppGroup, members: Member[]): Group {
     category: row.category,
     raceStatus,
     dbStatus: row.status,
+    completedAt: row.completed_at ?? null,
   };
 }
 
@@ -367,6 +469,7 @@ export async function fetchAppGroups(): Promise<Group[]> {
   const { data: groupRows, error: groupError } = await supabase
     .from("groups")
     .select("*")
+    .in("status", [...GROUPS_FEED_DB_STATUSES])
     .order("created_at", { ascending: false });
 
   if (groupError) {
@@ -522,37 +625,7 @@ export async function fetchUserActiveGroupIds(
   knownGroups: Group[] = [],
   nickname?: string | null,
 ) {
-  const ids = new Set<string>();
-  const membershipUserIds = await resolveMembershipUserIds(userId, nickname);
-
-  if (membershipUserIds.length > 0) {
-    const { data: memberRows, error: memberError } = await supabase
-      .from("group_members")
-      .select("group_id, status")
-      .in("user_id", membershipUserIds);
-    if (memberError) {
-      throw new Error(memberError.message || "참여 중인 모임 수를 확인할 수 없습니다.");
-    }
-    for (const row of memberRows ?? []) {
-      if (!isActiveMemberRow(row)) continue;
-      const id = normalizeGroupId(row.group_id);
-      if (id) ids.add(id);
-    }
-
-    for (const membershipUserId of membershipUserIds) {
-      const ownerResult = await supabase
-        .from("groups")
-        .select("id, status")
-        .eq("owner_id", membershipUserId);
-      if (!ownerResult.error) {
-        for (const row of ownerResult.data ?? []) {
-          const id = normalizeGroupId(row.id);
-          if (id) ids.add(id);
-        }
-      }
-    }
-  }
-
+  const ids = new Set(await collectUserMembershipGroupIds(userId, nickname));
   if (ids.size === 0) return [];
 
   const knownById = new Map(
@@ -560,25 +633,46 @@ export async function fetchUserActiveGroupIds(
   );
   const unresolved = [...ids].filter((id) => !knownById.has(id));
 
-  let statusById = new Map<string, string | null>();
+  type GroupMeta = {
+    status: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+  };
+  let metaById = new Map<string, GroupMeta>();
   if (unresolved.length > 0) {
     const { data: groupRows, error: groupError } = await supabase
       .from("groups")
-      .select("id, status")
+      .select("id, status, started_at, completed_at")
       .in("id", unresolved);
     if (!groupError) {
-      statusById = new Map(
-        (groupRows ?? []).map((row) => [normalizeGroupId(row.id), row.status]),
+      metaById = new Map(
+        (groupRows ?? []).map((row) => [
+          normalizeGroupId(row.id),
+          {
+            status: row.status,
+            started_at: row.started_at,
+            completed_at: (row as { completed_at?: string | null }).completed_at ?? null,
+          },
+        ]),
       );
     }
   }
 
   return [...ids].filter((id) => {
     const known = knownById.get(id);
-    if (known) return isActiveChallengeGroup(known);
-    const status = statusById.get(id);
-    if (status === undefined) return true;
-    return !isEndedGroupStatus(status);
+    if (known) return isEligibleForMyGroupsList(known);
+    const meta = metaById.get(id);
+    if (!meta) return true;
+    if (!isEndedGroupStatus(meta.status)) return true;
+    if (isCompletedGroupStatus(meta.status)) {
+      return isEligibleForMyGroupsList({
+        id,
+        dbStatus: meta.status,
+        startedAt: meta.started_at,
+        completedAt: meta.completed_at,
+      } as Group);
+    }
+    return false;
   });
 }
 
@@ -586,7 +680,10 @@ export async function hydrateUserGroups(
   userId: string,
   me: { nickname?: string | null; avatar?: string | null },
 ): Promise<{ groups: Group[]; joinedIds: string[] }> {
-  let groups = await fetchAppGroups();
+  let groups = mergeGroupLists(
+    await fetchAppGroups(),
+    await fetchUserMembershipGroupsFromDb(userId, me.nickname),
+  );
   const persistedIds = readPersistedJoinedIds(userId);
   let serverJoinedIds: string[] = [];
   let membershipFromServer = false;

@@ -83,6 +83,7 @@ export type Database = {
           status: string | null;
           owner_id: string | null;
           started_at: string | null;
+          completed_at: string | null;
           additional_recruiting_until: string | null;
           created_at: string;
         };
@@ -99,6 +100,7 @@ export type Database = {
           status?: string | null;
           owner_id?: string | null;
           started_at?: string | null;
+          completed_at?: string | null;
           additional_recruiting_until?: string | null;
           created_at?: string;
         };
@@ -115,6 +117,7 @@ export type Database = {
           status?: string | null;
           owner_id?: string | null;
           started_at?: string | null;
+          completed_at?: string | null;
           additional_recruiting_until?: string | null;
           created_at?: string;
         };

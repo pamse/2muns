@@ -63,13 +63,24 @@ export async function markGroupCompletedIfEligible(groupId: string) {
 
   const attempts = [{ status: "completed" }, { status: "finished" }] as const;
 
+  const completedAt = new Date().toISOString();
+
   for (const patch of attempts) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("groups")
-      .update(patch)
+      .update({ ...patch, completed_at: completedAt })
       .eq("id", id)
       .select("id, status")
       .maybeSingle();
+
+    if (error) {
+      ({ data, error } = await supabase
+        .from("groups")
+        .update(patch)
+        .eq("id", id)
+        .select("id, status")
+        .maybeSingle());
+    }
 
     if (!error && data) return true;
     if (error) {

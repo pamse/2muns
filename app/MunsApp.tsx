@@ -8,6 +8,10 @@ import type { Notice } from "@/lib/database.types";
 import { addGroupMember, applyUserProfileToGroups, clearPersistedJoinedIds, countUserMemberships, fetchAppGroups, hydrateUserGroups, overlayMyProfile, persistJoinedIds, quitChallengeGroup, removePersistedJoinedId, type QuitChallengeResult } from "@/lib/groups";
 import { sweepGraceExpulsions } from "@/lib/challengeHearts";
 import { canGuestJoinGroup } from "@/lib/groupRecruiting";
+import {
+  countsTowardJoinLimit,
+  isWithinCompletionGracePeriod,
+} from "@/lib/groupCompletionGrace";
 import { getEffectiveMaxJoinedGroups, type PointAwardResult } from "@/lib/points";
 import { withdrawUserAccount } from "@/lib/account";
 import { ensurePublicUserFromAuth } from "@/lib/authUser";
@@ -21,6 +25,7 @@ import { PROFILE_UPDATED_EVENT } from "@/lib/profile";
 import { useUserPoints } from "./useUserPoints";
 import {
   getGroupOwnerId,
+  isCompletedGroupStatus,
   isGroupMember,
   isGroupOwner,
   JOIN_LIMIT_MESSAGE,
@@ -530,6 +535,10 @@ export default function MunsApp() {
     if (!isLoggedIn() || !userId) return [];
     return listJoinedActiveGroups(visibleGroups, { userId, nickname }, joinedGroupIds);
   }, [visibleGroups, userId, nickname, joinedGroupIds, ready, hasNickname]);
+  const myJoinSlotGroups = useMemo(
+    () => myActiveGroups.filter((group) => countsTowardJoinLimit(group)),
+    [myActiveGroups],
+  );
   const joinLimit = useMemo(
     () => getEffectiveMaxJoinedGroups(pointsSnapshot),
     [pointsSnapshot],
@@ -617,7 +626,7 @@ export default function MunsApp() {
   function openCreateSheet(prefill: CreateGroupPrefill | null = null) {
     if (!requireAuth({ type: "create" })) return;
     void (async () => {
-      if (myActiveGroups.length >= joinLimit) {
+      if (myJoinSlotGroups.length >= joinLimit) {
         setShowJoinLimit(true);
         return;
       }
@@ -801,13 +810,21 @@ export default function MunsApp() {
   }
 
   async function openRoom(g: Group) {
-    const member = isGroupMember(g, { userId, nickname });
-    if (!canGuestJoinGroup(g, member) && !member) {
+    const latest = groups.find((item) => item.id === g.id) ?? g;
+    if (
+      isCompletedGroupStatus(latest.dbStatus) &&
+      !isWithinCompletionGracePeriod(latest)
+    ) {
+      setToast("완주 후 영상 다운로드 유예 기간(24시간)이 종료된 모임입니다");
+      setAutoOpenVerify(false);
+      return;
+    }
+    const member = isGroupMember(latest, { userId, nickname });
+    if (!canGuestJoinGroup(latest, member) && !member) {
       setShowEntryDenied(true);
       setAutoOpenVerify(false);
       return;
     }
-    const latest = groups.find((item) => item.id === g.id) ?? g;
     setRoom(latest);
   }
 
@@ -829,7 +846,7 @@ export default function MunsApp() {
       return;
     }
 
-    const localJoinedCount = myActiveGroups.length;
+    const localJoinedCount = myJoinSlotGroups.length;
     if (!userId && localJoinedCount >= joinLimit) {
       setShowJoinLimit(true);
       return;
@@ -956,7 +973,7 @@ export default function MunsApp() {
     }
     if (intent.type === "create") {
       pendingIntentRef.current = null;
-      if (myActiveGroups.length >= joinLimit) {
+      if (myJoinSlotGroups.length >= joinLimit) {
         setShowJoinLimit(true);
         return;
       }
@@ -1210,7 +1227,7 @@ export default function MunsApp() {
           }}
           onCreate={handleCreate}
           onJoinLimit={() => setShowJoinLimit(true)}
-          joinedCount={myActiveGroups.length}
+          joinedCount={myJoinSlotGroups.length}
           maxJoinedGroups={joinLimit}
           onCreatedNotice={prependNotice}
           onNoticesRefresh={() => {

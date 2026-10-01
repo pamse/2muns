@@ -16,7 +16,12 @@ import {
   type Group,
   type GroupFilter,
 } from "./data";
-import { fetchVerifications } from "@/lib/verifications";
+import {
+  debugChallengeBadge,
+  groupForChallengeBadge,
+  isUserVerifiedOnChallengeDay,
+  resolveCurrentChallengeDay,
+} from "@/lib/challengeBadge";
 import {
   isJoinableTabGroup,
   isRunningTabGroup,
@@ -210,7 +215,7 @@ function GroupCard({
               </Pill>
             ) : (
               <ChallengeRunningBadge
-                group={group}
+                group={groupForChallengeBadge(group)}
                 myTodayVerified={isMember && myTodayVerified}
               />
             )}
@@ -304,10 +309,7 @@ export function FindTab({
 
     void (async () => {
       const targets = groups.filter(
-        (g) =>
-          g.filter === "ongoing" &&
-          hasRaceStarted(g) &&
-          isGroupMember(g, { userId: myUserId, nickname }),
+        (g) => hasRaceStarted(g) && isGroupMember(g, { userId: myUserId, nickname }),
       );
       if (targets.length === 0) {
         if (!cancelled) setVerifiedTodayByGroup({});
@@ -316,15 +318,25 @@ export function FindTab({
 
       const entries = await Promise.all(
         targets.map(async (g) => {
-          const day = Math.max(1, g.day);
+          const gid = normalizeGroupId(g.id);
+          const challengeDay = resolveCurrentChallengeDay(g);
           try {
-            const rows = await fetchVerifications(g.id, day);
-            const verified = rows.some(
-              (row) => normalizeGroupId(row.user_id) === normalizeGroupId(myUserId),
-            );
-            return [normalizeGroupId(g.id), verified] as const;
-          } catch {
-            return [normalizeGroupId(g.id), false] as const;
+            const verified = await isUserVerifiedOnChallengeDay(g.id, myUserId, challengeDay);
+            debugChallengeBadge("FindTab card verify state", {
+              groupName: g.name,
+              groupId: gid,
+              groupDayField: g.day,
+              challengeDay,
+              verified,
+            });
+            return [gid, verified] as const;
+          } catch (error) {
+            debugChallengeBadge("FindTab verify fetch failed", {
+              groupId: gid,
+              challengeDay,
+              error,
+            });
+            return [gid, false] as const;
           }
         }),
       );
