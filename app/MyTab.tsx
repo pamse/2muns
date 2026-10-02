@@ -77,6 +77,8 @@ import {
   purchaseSlotExpansion,
   type UserPointsSnapshot,
 } from "@/lib/points";
+import { supabase } from "@/lib/supabase";
+import type { User } from "@supabase/supabase-js";
 
 function formatHms(totalSeconds: number) {
   const h = Math.floor(totalSeconds / 3600);
@@ -113,9 +115,93 @@ function ExternalLinkCard({ href, title }: { href: string; title: string }) {
   );
 }
 
-function FooterLinkCards() {
+function MenuCardButton({
+  title,
+  onClick,
+}: {
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full cursor-pointer items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 text-left transition hover:border-zinc-700"
+    >
+      <span className="text-sm font-semibold text-white">{title}</span>
+    </button>
+  );
+}
+
+function KakaoProviderIcon() {
+  return (
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#FEE500]">
+      <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden>
+        <path
+          fill="#191919"
+          d="M12 3C6.48 3 2 6.58 2 11c0 2.83 1.86 5.31 4.62 6.72-.19.7-.69 2.54-.79 2.95-.12.5.18.49.38.36.16-.11 2.54-1.73 3.56-2.43A13.4 13.4 0 0 0 12 19c5.52 0 10-3.58 10-8s-4.48-8-10-8Z"
+        />
+      </svg>
+    </span>
+  );
+}
+
+function AppleProviderIcon() {
+  return (
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-white">
+      <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden fill="currentColor">
+        <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
+      </svg>
+    </span>
+  );
+}
+
+type LinkedAuthProvider = "kakao" | "apple" | "email";
+
+function resolveLinkedAuthProviders(user: User | null): LinkedAuthProvider[] {
+  if (!user) return [];
+  const raw = new Set<string>();
+  for (const identity of user.identities ?? []) {
+    if (identity.provider) raw.add(identity.provider.toLowerCase());
+  }
+  const appMeta = user.app_metadata ?? {};
+  if (typeof appMeta.provider === "string") {
+    raw.add(appMeta.provider.toLowerCase());
+  }
+  if (Array.isArray(appMeta.providers)) {
+    for (const provider of appMeta.providers) {
+      if (typeof provider === "string") raw.add(provider.toLowerCase());
+    }
+  }
+
+  const linked: LinkedAuthProvider[] = [];
+  if (raw.has("kakao")) linked.push("kakao");
+  if (raw.has("apple")) linked.push("apple");
+  if (raw.has("email") || (user.email && linked.length === 0)) {
+    linked.push("email");
+  }
+  if (linked.length === 0 && user.email) {
+    linked.push("email");
+  }
+  return linked;
+}
+
+function providerLabel(provider: LinkedAuthProvider) {
+  if (provider === "kakao") return "카카오";
+  if (provider === "apple") return "Apple";
+  return "이메일";
+}
+
+function ProviderIcon({ provider }: { provider: LinkedAuthProvider }) {
+  if (provider === "kakao") return <KakaoProviderIcon />;
+  if (provider === "apple") return <AppleProviderIcon />;
+  return <ShieldCheck size={20} className="shrink-0 text-zinc-400" />;
+}
+
+function FooterLinkCards({ onOpenAccountInfo }: { onOpenAccountInfo: () => void }) {
   return (
     <nav aria-label="이용 안내 및 약관" className="flex flex-col gap-2.5">
+      <MenuCardButton title="계정 정보" onClick={onOpenAccountInfo} />
       <ExternalLinkCard href={FEEDBACK_URL} title="의견 및 오류 제보" />
       <ExternalLinkCard href={USER_GUIDE_URL} title="이용 가이드" />
       <ExternalLinkCard href={TERMS_URL} title="이용약관" />
@@ -744,6 +830,9 @@ export function MyTab({
   const [loggingOut, setLoggingOut] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [showAccountInfo, setShowAccountInfo] = useState(false);
+  const [accountUser, setAccountUser] = useState<User | null>(null);
+  const [accountInfoLoading, setAccountInfoLoading] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [verifiedState, setVerifiedState] = useState<{
     groupId: string;
@@ -1150,6 +1239,42 @@ export function MyTab({
     setShowWithdrawModal(true);
   }
 
+  function openWithdrawFromAccountInfo() {
+    if (withdrawing || loggingOut) return;
+    setShowAccountInfo(false);
+    openWithdrawModal();
+  }
+
+  useEffect(() => {
+    if (!showAccountInfo) {
+      setAccountUser(null);
+      setAccountInfoLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setAccountInfoLoading(true);
+    void supabase.auth.getUser().then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) {
+        console.error("account info user fetch failed", error);
+        setAccountUser(null);
+      } else {
+        setAccountUser(data.user ?? null);
+      }
+      setAccountInfoLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showAccountInfo]);
+
+  const linkedAuthProviders = useMemo(
+    () => resolveLinkedAuthProviders(accountUser),
+    [accountUser],
+  );
+
   async function confirmWithdrawAccount() {
     if (withdrawing || loggingOut) return;
     setWithdrawing(true);
@@ -1512,26 +1637,72 @@ export function MyTab({
         </Card>
       </section>
 
-      <FooterLinkCards />
+      <FooterLinkCards onOpenAccountInfo={() => setShowAccountInfo(true)} />
 
       <button
         type="button"
         onClick={() => void handleLogout()}
         disabled={loggingOut || withdrawing}
-        className="flex w-full items-center justify-center gap-1.5 py-4 text-center text-sm text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300 disabled:opacity-50"
+        className="flex w-full items-center justify-center gap-1.5 py-4 pb-4 text-center text-sm text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300 disabled:opacity-50"
       >
         <LogOut size={14} strokeWidth={2} />
         {loggingOut ? "로그아웃 중..." : "로그아웃"}
       </button>
 
-      <button
-        type="button"
-        onClick={openWithdrawModal}
-        disabled={loggingOut || withdrawing}
-        className="flex w-full items-center justify-center gap-1.5 pb-4 text-center text-sm text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300 disabled:opacity-50"
+      <BottomSheet
+        open={showAccountInfo}
+        onClose={() => !withdrawing && setShowAccountInfo(false)}
+        title="계정 정보"
       >
-        회원탈퇴
-      </button>
+        {accountInfoLoading ? (
+          <div className="flex justify-center py-10">
+            <Loader2 size={28} className="animate-spin text-zinc-400" />
+          </div>
+        ) : (
+          <div className="space-y-5 pb-2">
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                로그인 이메일
+              </p>
+              <p className="mt-1.5 break-all text-sm font-semibold text-white">
+                {accountUser?.email?.trim() || "연결된 이메일 없음"}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                연결된 계정
+              </p>
+              <ul className="mt-2 space-y-2">
+                {linkedAuthProviders.length === 0 ? (
+                  <li className="text-sm text-zinc-500">연동 정보를 불러올 수 없습니다.</li>
+                ) : (
+                  linkedAuthProviders.map((provider) => (
+                    <li
+                      key={provider}
+                      className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5"
+                    >
+                      <ProviderIcon provider={provider} />
+                      <span className="text-sm font-medium text-white">
+                        {providerLabel(provider)}
+                      </span>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={openWithdrawFromAccountInfo}
+                disabled={loggingOut || withdrawing}
+                className="text-[11px] text-zinc-500 underline underline-offset-2 transition-colors hover:text-zinc-400 disabled:opacity-50"
+              >
+                회원탈퇴
+              </button>
+            </div>
+          </div>
+        )}
+      </BottomSheet>
 
       <WithdrawRetentionModal
         open={showWithdrawModal}
