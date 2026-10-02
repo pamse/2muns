@@ -617,8 +617,9 @@ function WithdrawRetentionModal({
           type="button"
           onClick={onConfirmWithdraw}
           disabled={withdrawing}
-          className="mt-2 w-full py-2 text-xs text-zinc-500 underline underline-offset-4 transition hover:text-red-400 disabled:opacity-60"
+          className="mt-2 flex w-full items-center justify-center gap-2 py-2 text-xs text-zinc-500 underline underline-offset-4 transition hover:text-red-400 disabled:opacity-60"
         >
+          {withdrawing ? <Loader2 size={14} className="animate-spin" aria-hidden /> : null}
           {withdrawing ? "탈퇴 처리 중..." : "모든 불꽃을 끄고 탈퇴하기"}
         </button>
       </div>
@@ -1385,7 +1386,24 @@ export function MyTab({
         </div>
       </div>
 
-      {/* 참여 중인 챌린지 칩 */}
+      {/* 참여 중인 챌린지 */}
+      {myGroups.length === 0 ? (
+        <section>
+          <Card className="p-8 text-center">
+            <p className="text-base font-semibold text-white">아직 참여 중인 챌린지가 없어요</p>
+            <p className="mt-2 text-sm leading-relaxed text-gray-400">
+              모집 중인 모임에 참여하거나, 직접 새 모임을 만들어 66일 습관 레이스를 시작해 보세요.
+            </p>
+            <button
+              type="button"
+              onClick={onGoFind}
+              className="mt-5 w-full rounded-xl bg-[#00FF87] py-3 text-sm font-bold text-black transition-transform active:scale-[0.98]"
+            >
+              모임 둘러보기
+            </button>
+          </Card>
+        </section>
+      ) : (
       <section>
         <p className="mb-2 px-1 text-sm font-bold text-gray-300">
           참여 중인 챌린지 ({myGroups.length}/{maxJoinedGroups}개)
@@ -1437,6 +1455,7 @@ export function MyTab({
           )}
         </div>
       </section>
+      )}
 
       {/* TODO: TEST_MODE_BYPASS — FFmpeg API 실기기 검증용 1주차 모달 진입 */}
       {selected && started && SHORTS_FFMPEG_TEST_MODE ? (
@@ -1539,19 +1558,12 @@ export function MyTab({
             onOpenShop={() => setShowPointShop(true)}
           />
         </>
-      ) : (
+      ) : myGroups.length > 0 ? (
         <>
-          <Card className="p-8 text-center">
+          <Card className="p-6 text-center">
             <p className="text-sm leading-relaxed text-gray-400">
-              아직 참여 중인 모임이 없습니다. 새로운 모임을 찾아보세요!
+              챌린지를 선택하면 진행 상황과 인증 기록을 확인할 수 있어요.
             </p>
-            <button
-              type="button"
-              onClick={onGoFind}
-              className="mt-4 rounded-xl bg-[#00FF87] px-4 py-2.5 text-sm font-bold text-black transition-transform active:scale-[0.98]"
-            >
-              모임 둘러보기
-            </button>
           </Card>
           <MyPageStatsBlock
             completedHabits={completedHabits}
@@ -1560,6 +1572,13 @@ export function MyTab({
             onOpenShop={() => setShowPointShop(true)}
           />
         </>
+      ) : (
+        <MyPageStatsBlock
+          completedHabits={completedHabits}
+          displayPoints={displayPoints}
+          displayRank={displayRank}
+          onOpenShop={() => setShowPointShop(true)}
+        />
       )}
 
       <PointShopModal

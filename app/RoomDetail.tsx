@@ -1001,13 +1001,22 @@ function WaitingLobby({
             type="button"
             disabled={full || joining}
             onClick={onJoin}
-            className={`w-full rounded-2xl py-3.5 font-bold transition-all ${
+            className={`flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 font-bold transition-all ${
               full || joining
                 ? "cursor-not-allowed bg-zinc-700 text-zinc-400"
                 : "bg-[#00e599] text-black shadow-[0_0_20px_rgba(0,229,153,0.35)] hover:scale-[1.02] active:scale-[0.98]"
             }`}
           >
-            {joining ? "참여하는 중..." : full ? "모집 마감" : "이 모임 참여하기"}
+            {joining ? (
+              <>
+                <Loader2 size={18} className="animate-spin" aria-hidden />
+                참여하는 중...
+              </>
+            ) : full ? (
+              "모집 마감"
+            ) : (
+              "이 모임 참여하기"
+            )}
           </button>
         </div>
       ) : (
@@ -1730,6 +1739,7 @@ export function RoomDetail({
   }
 
   async function handleConfirmCapture(payload: { blob: Blob; videoUrl: string; comment: string }) {
+    if (uploading) return;
     if (!userId) {
       onToast?.("로그인이 필요합니다.");
       throw new Error("로그인이 필요합니다.");

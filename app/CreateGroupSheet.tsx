@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type PointerEvent } from "react";
-import { ChevronDown, Info, Lock, Timer, Users, Zap } from "lucide-react";
+import { ChevronDown, Info, Loader2, Lock, Timer, Users, Zap } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Notice } from "@/lib/database.types";
 import { MAX_JOINED_GROUPS, ME_AVATAR, type Group } from "./data";
@@ -762,14 +762,16 @@ export function CreateGroupSheet({
 
         {/* 만들기 버튼 */}
         <button
+          type="button"
           onClick={() => void handleSubmit()}
           disabled={!canSubmit}
-          className={`w-full rounded-xl py-3.5 text-center text-sm font-bold transition-colors ${
+          className={`flex w-full items-center justify-center gap-2 rounded-xl py-3.5 text-center text-sm font-bold transition-colors ${
             canSubmit
               ? "bg-[#00FF87] text-black active:scale-[0.98]"
               : "cursor-not-allowed bg-gray-700 text-gray-500"
           }`}
         >
+          {saving ? <Loader2 size={18} className="animate-spin" aria-hidden /> : null}
           {saving ? "만드는 중..." : "모임 만들기"}
         </button>
       </div>

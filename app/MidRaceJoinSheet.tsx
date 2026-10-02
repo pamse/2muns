@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Flame, X, Zap } from "lucide-react";
+import { Flame, Loader2, X, Zap } from "lucide-react";
 import type { Group } from "./data";
 import { groupThumbnailSrc } from "@/lib/categories";
 import { GroupThumb, Pill } from "./ui";
@@ -97,13 +97,22 @@ export function MidRaceJoinSheet({
             type="button"
             disabled={full || joining}
             onClick={() => onJoin(group)}
-            className={`w-full rounded-xl py-3.5 text-sm font-bold transition-transform active:scale-[0.98] ${
+            className={`flex w-full items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-bold transition-transform active:scale-[0.98] ${
               full || joining
                 ? "cursor-not-allowed bg-gray-700 text-gray-400"
                 : "bg-amber-400 text-black"
             }`}
           >
-            {joining ? "탑승하는 중..." : full ? "정원 마감" : "탑승하기"}
+            {joining ? (
+              <>
+                <Loader2 size={18} className="animate-spin" aria-hidden />
+                탑승하는 중...
+              </>
+            ) : full ? (
+              "정원 마감"
+            ) : (
+              "탑승하기"
+            )}
           </button>
         </div>
         <style>{`@keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>

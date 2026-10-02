@@ -12,6 +12,8 @@ type FacingMode = "user" | "environment";
 
 const RECORD_MS = 3000;
 const COMMENT_MAX = 20;
+const CAMERA_PERMISSION_GUIDE =
+  "카메라 접근 권한이 필요합니다. 기기 설정에서 권한을 허용해주세요.";
 function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => {
     track.stop();
@@ -89,6 +91,7 @@ export function CameraVerifyModal({
   const [submitting, setSubmitting] = useState(false);
   const [facingMode, setFacingMode] = useState<FacingMode>("environment");
   const [flipDeg, setFlipDeg] = useState(0);
+  const [permissionGuideOpen, setPermissionGuideOpen] = useState(false);
 
   const clearTimers = useCallback(() => {
     if (countdownRef.current != null) {
@@ -150,6 +153,7 @@ export function CameraVerifyModal({
     setStarting(false);
     setComment("");
     setSubmitting(false);
+    setPermissionGuideOpen(false);
     armedRef.current = false;
     revokeReview();
   }, [open, revokeReview]);
@@ -161,7 +165,7 @@ export function CameraVerifyModal({
 
     async function startCamera() {
       if (!navigator.mediaDevices?.getUserMedia) {
-        setError("이 브라우저에서는 카메라를 사용할 수 없습니다.");
+        setPermissionGuideOpen(true);
         return;
       }
 
@@ -197,7 +201,7 @@ export function CameraVerifyModal({
           err instanceof DOMException &&
           (err.name === "NotFoundError" || err.name === "DevicesNotFoundError");
         if (denied) {
-          setError("카메라 권한이 필요합니다. 브라우저에서 카메라 접근을 허용해 주세요.");
+          setPermissionGuideOpen(true);
         } else if (missing) {
           setError("사용 가능한 카메라를 찾지 못했습니다. 다른 기기를 확인해 주세요.");
         } else {
@@ -372,7 +376,32 @@ export function CameraVerifyModal({
   if (!open) return null;
 
   return (
-    <div className="absolute inset-0 z-[55] flex flex-col bg-black">
+    <div className="absolute inset-0 z-[55] flex flex-col bg-[#121316]">
+      {permissionGuideOpen ? (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/75 p-6 backdrop-blur-sm">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="camera-permission-title"
+            className="w-full max-w-sm rounded-2xl border border-zinc-700 bg-zinc-900 p-6 text-center shadow-2xl"
+          >
+            <h2 id="camera-permission-title" className="text-base font-bold text-white">
+              카메라 권한 안내
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-zinc-300">{CAMERA_PERMISSION_GUIDE}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setPermissionGuideOpen(false);
+                onClose();
+              }}
+              className="mt-5 w-full rounded-xl bg-[#00FF87] py-3 text-sm font-bold text-black active:scale-[0.98]"
+            >
+              확인
+            </button>
+          </div>
+        </div>
+      ) : null}
       <header className="flex shrink-0 items-center justify-between px-3 py-3">
         <button
           type="button"
